@@ -35,7 +35,7 @@ public:
   }
 
   StringList importModFiles() override {
-    auto modsDirectory = File::relativeTo(m_storageRoot, "mods");
+    auto modsDirectory = resolveModsDirectory();
     File::makeDirectoryRecursive(modsDirectory);
 
 #ifdef STAR_SYSTEM_ANDROID
@@ -48,7 +48,7 @@ public:
   }
 
   bool openModsLocationInSystemBrowser() override {
-    auto modsDirectory = File::relativeTo(m_storageRoot, "mods");
+    auto modsDirectory = resolveModsDirectory();
     File::makeDirectoryRecursive(modsDirectory);
 
 #ifdef STAR_SYSTEM_ANDROID
@@ -61,6 +61,15 @@ public:
   }
 
 private:
+  String resolveModsDirectory() const {
+    auto fallbackModsDirectory = File::relativeTo(m_storageRoot, "mods");
+#ifdef STAR_SYSTEM_ANDROID
+    if (auto resolved = AndroidFileAccessBridge::resolveModsDirectory(fallbackModsDirectory))
+      return *resolved;
+#endif
+    return fallbackModsDirectory;
+  }
+
   String m_storageRoot;
 };
 

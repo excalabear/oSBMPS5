@@ -1,0 +1,96 @@
+name: Android Build (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: Android build type
+        required: true
+        type: choice
+        options:
+          - Release
+          - Debug
+        default: Release
+
+permissions:
+  contents: read
+
+jobs:
+  build_android:
+    name: Build Android ARM64 APK
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            libtool \
+            make \
+            ninja-build \
+            pkg-config \
+            perl \
+            unzip \
+            zip
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android components
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;26.3.11579264"
+          echo "ANDROID_SDK_ROOT=${ANDROID_HOME}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/26.3.11579264" >> "${GITHUB_ENV}"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: "**/source/vcpkg.json"
+          vcpkgConfigurationJsonGlob: "**/source/vcpkg-configuration.json"
+
+      - name: Select CMake preset
+        run: |
+          if [ "${{ inputs.build_type }}" = "Debug" ]; then
+            echo "CMAKE_PRESET=android-arm64-debug" >> "${GITHUB_ENV}"
+            echo "APK_PATH=source/application/mobile/android/host/app/build/outputs/apk/debug/app-debug.apk" >> "${GITHUB_ENV}"
+          else
+            echo "CMAKE_PRESET=android-arm64-release" >> "${GITHUB_ENV}"
+            echo "APK_PATH=source/application/mobile/android/host/app/build/outputs/apk/release/app-release.apk" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Configure CMake
+        working-directory: source
+        run: cmake --preset "${CMAKE_PRESET}"
+
+      - name: Build APK
+        working-directory: source
+        run: cmake --build --preset "${CMAKE_PRESET}" --target android_apk --parallel
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenStarbound-Android-${{ inputs.build_type }}-arm64
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error

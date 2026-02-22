@@ -812,6 +812,12 @@ private:
     SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
     SDL_SetHint(SDL_HINT_RENDER_VSYNC, "0");
     SDL_SetHint(SDL_HINT_VIDEO_SYNC_WINDOW_OPERATIONS, "0");
+#if defined(SDL_HINT_TOUCH_MOUSE_EVENTS)
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "1");
+#endif
+#if defined(SDL_HINT_MOUSE_TOUCH_EVENTS)
+    SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "1");
+#endif
 #endif
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD))
       throw ApplicationException::format("Could not initialize SDL: {}", SDL_GetError());
@@ -890,6 +896,12 @@ private:
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
     ImGui::StyleColorsDark();
+    auto& style = ImGui::GetStyle();
+    style.TouchExtraPadding = ImVec2(12.0f, 12.0f);
+    style.FramePadding = ImVec2(14.0f, 10.0f);
+    style.ItemSpacing = ImVec2(12.0f, 10.0f);
+    style.ScrollbarSize = std::max(style.ScrollbarSize, 28.0f);
+    refreshImGuiScale();
     ImGui_ImplSDL3_InitForOpenGL(m_window, m_glContext);
     ImGui_ImplOpenGL3_Init("#version 300 es");
   }
@@ -947,8 +959,9 @@ private:
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2((float)m_windowSize[0] - 48.0f, (float)m_windowSize[1] - 48.0f), ImGuiCond_Always);
+    float margin = std::max(10.0f, (float)std::min(m_windowSize[0], m_windowSize[1]) * 0.0125f);
+    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2((float)m_windowSize[0] - margin * 2.0f, (float)m_windowSize[1] - margin * 2.0f), ImGuiCond_Always);
     ImGui::Begin(
       "OpenStarbound Mobile Loader",
       nullptr,
@@ -974,17 +987,25 @@ private:
     }
 
     ImGui::Separator();
+    auto modsPath = modsDirectoryPath();
+    ImGui::TextWrapped("Current mods directory: %s", modsPath.utf8Ptr());
 
-    if (ImGui::Button("Import mods (native picker)")) {
+    if (ImGui::Button("Import NEW Mods Folder (Replaces Current)")) {
       if (auto svc = m_platformServices->externalFileAccessService()) {
         auto imported = svc->importModFiles();
-        state.lastStatus = imported.empty() ? "No mods imported" : strf("Imported {} mod(s)", imported.size());
+        state.lastStatus = imported.empty() ? "No new mods imported." : strf("Imported {} mod(s)", imported.size());
       }
     }
 
-    if (ImGui::Button("Open mods directory")) {
-      if (auto svc = m_platformServices->externalFileAccessService())
-        svc->openModsLocationInSystemBrowser();
+    if (ImGui::Button("View Current Mods Directory")) {
+      if (auto svc = m_platformServices->externalFileAccessService()) {
+        if (svc->openModsLocationInSystemBrowser()) {
+          state.lastStatus = "Opened current mods directory.";
+          state.lastError.clear();
+        } else {
+          state.lastError = "Could not open current mods directory in file manager.";
+        }
+      }
     }
 
     ImGui::Separator();
@@ -1047,7 +1068,7 @@ private:
       return false;
     }
 
-    auto modsPath = File::relativeTo(m_storageRoot, "mods");
+    auto modsPath = modsDirectoryPath();
     File::makeDirectoryRecursive(modsPath);
 
     String bundledAssetsRoot;
@@ -1220,8 +1241,9 @@ private:
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2((float)m_windowSize[0] - 48.0f, (float)m_windowSize[1] - 48.0f), ImGuiCond_Always);
+    float margin = std::max(10.0f, (float)std::min(m_windowSize[0], m_windowSize[1]) * 0.0125f);
+    ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2((float)m_windowSize[0] - margin * 2.0f, (float)m_windowSize[1] - margin * 2.0f), ImGuiCond_Always);
     ImGui::Begin(
       "OpenStarbound Mobile Loader",
       nullptr,
@@ -1393,9 +1415,26 @@ private:
 #else
         m_quitRequested = true;
 #endif
-      if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED)
+      if (event.type == SDL_EVENT_WINDOW_RESIZED || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
         m_windowSize = Vec2U((unsigned)event.window.data1, (unsigned)event.window.data2);
+        refreshImGuiScale();
+      }
     }
+  }
+
+  void refreshImGuiScale() {
+    auto& io = ImGui::GetIO();
+    float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]);
+    io.FontGlobalScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
+  }
+
+  String modsDirectoryPath() const {
+    auto fallbackModsPath = File::relativeTo(m_storageRoot, "mods");
+#if STAR_SYSTEM_ANDROID
+    if (auto resolvedPath = AndroidFileAccessBridge::resolveModsDirectory(fallbackModsPath))
+      return *resolvedPath;
+#endif
+    return fallbackModsPath;
   }
 
   ApplicationUPtr m_application;

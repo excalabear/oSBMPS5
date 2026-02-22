@@ -59,6 +59,9 @@ android {
 }
 
 dependencies {
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.documentfile:documentfile:1.0.1'
+
     if (useExternalSdlJar) {
         // Prefer exact SDL Java glue from the matching vcpkg artifact.
         implementation files(sdlJar)

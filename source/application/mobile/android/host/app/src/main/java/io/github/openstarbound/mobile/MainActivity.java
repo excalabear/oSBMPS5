@@ -3,6 +3,7 @@ package io.github.openstarbound.mobile;
 import android.app.AlertDialog;
 import android.content.ContentResolver;
 import android.content.Intent;
+import android.content.pm.ResolveInfo;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
@@ -17,12 +18,16 @@ import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
 
+import androidx.core.content.FileProvider;
+import androidx.documentfile.provider.DocumentFile;
+
 import org.libsdl.app.SDLActivity;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -237,10 +242,8 @@ public final class MainActivity extends SDLActivity {
         }
 
         activity.runOnUiThread(() -> {
-            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("*/*");
-            intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             activity.startActivityForResult(intent, REQUEST_PICK_MODS);
         });
 
@@ -255,19 +258,212 @@ public final class MainActivity extends SDLActivity {
         }
     }
 
+    private static Uri externalStorageDocumentUriForPath(String absolutePath) {
+        if (absolutePath == null || absolutePath.isEmpty()) {
+            return null;
+        }
+
+        String normalized = absolutePath.replace('\\', '/');
+        String relative = null;
+
+        String[] prefixes = new String[] {
+            "/storage/emulated/0/",
+            "/storage/self/primary/",
+            "/sdcard/"
+        };
+        for (String prefix : prefixes) {
+            if (normalized.startsWith(prefix)) {
+                relative = normalized.substring(prefix.length());
+                break;
+            }
+        }
+        if (relative == null || relative.isEmpty()) {
+            return null;
+        }
+
+        try {
+            return DocumentsContract.buildDocumentUri(
+                "com.android.externalstorage.documents",
+                "primary:" + relative
+            );
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    public static String resolveModsDirectory(String fallbackModsDirectory) {
+        MainActivity activity = instance();
+
+        File modsDir = null;
+        if (activity != null) {
+            try {
+                File externalFiles = activity.getExternalFilesDir(null);
+                if (externalFiles != null) {
+                    modsDir = new File(externalFiles, "mods");
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+
+        if (modsDir == null) {
+            if (fallbackModsDirectory == null || fallbackModsDirectory.isEmpty()) {
+                return null;
+            }
+            modsDir = new File(fallbackModsDirectory);
+        }
+
+        if (!modsDir.exists() && !modsDir.mkdirs()) {
+            return fallbackModsDirectory;
+        }
+        return modsDir.getAbsolutePath();
+    }
+
+    private static boolean deleteRecursively(File file) {
+        if (file == null || !file.exists()) {
+            return true;
+        }
+
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    if (!deleteRecursively(child)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        return file.delete();
+    }
+
+    private static boolean clearDirectoryContents(File dir) {
+        if (dir == null) {
+            return false;
+        }
+        if (!dir.exists()) {
+            return dir.mkdirs();
+        }
+        if (!dir.isDirectory()) {
+            return false;
+        }
+
+        File[] children = dir.listFiles();
+        if (children == null) {
+            return true;
+        }
+
+        for (File child : children) {
+            if (!deleteRecursively(child)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void copyDocumentTreeIntoMods(
+        MainActivity activity,
+        DocumentFile sourceDir,
+        File targetDir,
+        ArrayList<String> importedMods
+    ) {
+        DocumentFile[] children;
+        try {
+            children = sourceDir.listFiles();
+        } catch (Throwable ignored) {
+            return;
+        }
+
+        for (DocumentFile child : children) {
+            if (child == null) {
+                continue;
+            }
+
+            String childName = child.getName();
+            if (childName == null || childName.isEmpty()) {
+                childName = child.isDirectory() ? "mod_folder" : "mod_file";
+            }
+            String safeName = sanitizeFileName(childName, child.isDirectory() ? "mod_folder" : "mod_file");
+            File target = new File(targetDir, safeName);
+
+            if (child.isDirectory()) {
+                if (!target.exists() && !target.mkdirs()) {
+                    continue;
+                }
+                copyDocumentTreeIntoMods(activity, child, target, importedMods);
+            } else if (child.isFile()) {
+                String imported = copyUriToPath(activity, child.getUri(), target);
+                if (imported != null) {
+                    importedMods.add(imported);
+                }
+            }
+        }
+    }
+
     public static boolean openModsDirectory(String modsDirectory) {
         MainActivity activity = instance();
         if (activity == null) {
             return false;
         }
 
+        String resolvedModsDir = resolveModsDirectory(modsDirectory);
+        if (resolvedModsDir == null || resolvedModsDir.isEmpty()) {
+            return false;
+        }
+
+        File modsDirFile = new File(resolvedModsDir);
+        if (!modsDirFile.exists() && !modsDirFile.mkdirs()) {
+            return false;
+        }
+
         activity.runOnUiThread(() -> {
             try {
-                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-                if (Build.VERSION.SDK_INT >= 26) {
-                    intent.putExtra(DocumentsContract.EXTRA_INITIAL_URI, Uri.parse("content://com.android.externalstorage.documents/document/primary%3A"));
+                Uri documentUri = externalStorageDocumentUriForPath(modsDirFile.getAbsolutePath());
+
+                if (documentUri != null) {
+                    Intent documentIntent = new Intent(Intent.ACTION_VIEW);
+                    documentIntent.setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR);
+                    documentIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    documentIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    if (activity.getPackageManager().resolveActivity(documentIntent, 0) != null) {
+                        activity.startActivity(documentIntent);
+                        return;
+                    }
                 }
-                activity.startActivity(intent);
+
+                Uri uri = FileProvider.getUriForFile(
+                    activity,
+                    activity.getPackageName() + ".fileprovider",
+                    modsDirFile
+                );
+
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri, DocumentsContract.Document.MIME_TYPE_DIR);
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
+                List<ResolveInfo> targets = activity.getPackageManager().queryIntentActivities(intent, 0);
+                for (ResolveInfo target : targets) {
+                    activity.grantUriPermission(
+                        target.activityInfo.packageName,
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    );
+                }
+
+                if (!targets.isEmpty()) {
+                    activity.startActivity(intent);
+                    return;
+                }
+
+                Intent fallback = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                fallback.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                Uri fallbackUri = externalStorageDocumentUriForPath(modsDirFile.getAbsolutePath());
+                if (Build.VERSION.SDK_INT >= 26 && fallbackUri != null) {
+                    fallback.putExtra(DocumentsContract.EXTRA_INITIAL_URI, fallbackUri);
+                }
+                activity.startActivity(fallback);
             } catch (Throwable ignored) {
             }
         });
@@ -425,30 +621,30 @@ public final class MainActivity extends SDLActivity {
                     return;
                 }
 
-                ArrayList<Uri> uris = new ArrayList<>();
-                if (data.getData() != null) {
-                    uris.add(data.getData());
-                }
-                if (data.getClipData() != null) {
-                    for (int i = 0; i < data.getClipData().getItemCount(); ++i) {
-                        Uri uri = data.getClipData().getItemAt(i).getUri();
-                        if (uri != null) {
-                            uris.add(uri);
-                        }
-                    }
+                Uri treeUri = data.getData();
+                if (treeUri == null) {
+                    return;
                 }
 
                 ContentResolver resolver = getContentResolver();
-                for (Uri uri : uris) {
-                    String name = displayName(resolver, uri);
-                    if (name == null || name.isEmpty()) {
-                        name = "mod_" + System.currentTimeMillis() + ".pak";
-                    }
-                    File target = new File(modsDir, sanitizeFileName(name, "mod.pak"));
-                    String imported = copyUriToPath(this, uri, target);
-                    if (imported != null) {
+                File modsDirFile = new File(modsDir);
+                if (!modsDirFile.exists()) {
+                    modsDirFile.mkdirs();
+                }
+
+                int grantFlags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                try {
+                    resolver.takePersistableUriPermission(treeUri, grantFlags);
+                } catch (Throwable ignored) {
+                }
+
+                if (clearDirectoryContents(modsDirFile)) {
+                    DocumentFile pickedTree = DocumentFile.fromTreeUri(this, treeUri);
+                    if (pickedTree != null && pickedTree.isDirectory()) {
+                        ArrayList<String> imported = new ArrayList<>();
+                        copyDocumentTreeIntoMods(this, pickedTree, modsDirFile, imported);
                         synchronized (PICKER_LOCK) {
-                            sImportedMods.add(imported);
+                            sImportedMods.addAll(imported);
                         }
                     }
                 }

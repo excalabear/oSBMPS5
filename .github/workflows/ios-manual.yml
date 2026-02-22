@@ -1,0 +1,44 @@
+name: iOS Build (Manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build_ios:
+    name: Build iOS ARM64 (compile path)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: "**/source/vcpkg.json"
+          vcpkgConfigurationJsonGlob: "**/source/vcpkg-configuration.json"
+
+      - name: Configure CMake
+        working-directory: source
+        run: cmake --preset ios-arm64-debug
+
+      - name: Build
+        working-directory: source
+        run: cmake --build --preset ios-arm64-debug --parallel
+
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenStarbound-iOS-build-logs
+          path: |
+            build/ios-arm64-debug/CMakeCache.txt
+            build/ios-arm64-debug/CMakeFiles/CMakeOutput.log
+            build/ios-arm64-debug/CMakeFiles/CMakeError.log
+          if-no-files-found: warn

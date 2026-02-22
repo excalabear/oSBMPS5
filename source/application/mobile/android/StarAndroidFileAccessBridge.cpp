@@ -104,6 +104,41 @@ Maybe<String> AndroidFileAccessBridge::pickAndImportPackedPak(String const& targ
 #endif
 }
 
+Maybe<String> AndroidFileAccessBridge::resolveModsDirectory(String const& fallbackModsDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return {};
+
+  jclass cls = mainActivityClass(env);
+  if (!cls)
+    return {};
+
+  jmethodID method = env->GetStaticMethodID(cls, "resolveModsDirectory", "(Ljava/lang/String;)Ljava/lang/String;");
+  if (!method)
+    return {};
+
+  jstring arg = env->NewStringUTF(fallbackModsDirectory.utf8Ptr());
+  jstring result = (jstring)env->CallStaticObjectMethod(cls, method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return {};
+  }
+
+  String value = toStarString(env, result);
+  if (result)
+    env->DeleteLocalRef(result);
+  if (value.empty())
+    return {};
+  return value;
+#else
+  (void)fallbackModsDirectory;
+  return {};
+#endif
+}
+
 StringList AndroidFileAccessBridge::importModFiles(String const& modsDirectory) {
 #ifdef STAR_SYSTEM_ANDROID
   StringList out;
