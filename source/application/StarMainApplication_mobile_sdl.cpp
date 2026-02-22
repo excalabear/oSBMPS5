@@ -172,8 +172,8 @@ public:
     if (!m_config.enabled)
       return;
 
-    auto& io = ImGui::GetIO();
-    float radius = 56.0f * m_config.size * io.DisplayFramebufferScale.x;
+    float radius = controlRadius();
+    updateButtonCenters(radius);
 
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     ImU32 base = IM_COL32(255, 255, 255, (int)(180.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
@@ -187,6 +187,7 @@ public:
     drawButton(draw, m_jumpButtonCenter, radius * 0.55f, m_jumpHeld, "J", base, fill);
     drawButton(draw, m_interactButtonCenter, radius * 0.50f, m_interactHeld, "E", base, fill);
     drawButton(draw, m_altButtonCenter, radius * 0.50f, m_altHeld, "A", base, fill);
+    drawButton(draw, m_pauseButtonCenter, radius * 0.52f, m_pauseHeld, "ESC", base, fill);
   }
 
 private:
@@ -196,7 +197,8 @@ private:
     Aim,
     JumpButton,
     InteractButton,
-    AltButton
+    AltButton,
+    PauseButton
   };
 
   struct FingerState {
@@ -207,10 +209,31 @@ private:
     return (p - center).magnitudeSquared() <= radius * radius;
   }
 
-  Vec2F toScreen(float normX, float normY) const {
+  float controlRadius() const {
+    float shortSide = (float)std::min((*m_windowSize)[0], (*m_windowSize)[1]);
+    return 56.0f * m_config.size * std::max(1.0f, shortSide / 720.0f);
+  }
+
+  Vec2F toScreen(float x, float y) const {
+    // SDL finger events can be normalized [0..1] or already in render-space
+    // depending on conversion/platform path.
+    if (x >= 0.0f && x <= 1.0f && y >= 0.0f && y <= 1.0f) {
+      return {
+        x * (float)(*m_windowSize)[0],
+        y * (float)(*m_windowSize)[1]
+      };
+    }
+
     return {
-      normX * (float)(*m_windowSize)[0],
-      (1.0f - normY) * (float)(*m_windowSize)[1]
+      x,
+      y
+    };
+  }
+
+  Vec2F toInputSpace(Vec2F const& pos) const {
+    return {
+      pos[0],
+      (float)(*m_windowSize)[1] - pos[1]
     };
   }
 
@@ -218,22 +241,32 @@ private:
     if (m_fingers.contains(finger))
       return;
 
-    float shortSide = (float)std::min((*m_windowSize)[0], (*m_windowSize)[1]);
-    float radius = 56.0f * m_config.size * std::max(1.0f, shortSide / 720.0f);
-
+    float radius = controlRadius();
     updateButtonCenters(radius);
 
     FingerState state;
-    if (insideCircle(pos, m_jumpButtonCenter, radius * 0.70f)) {
+    float w = (float)(*m_windowSize)[0];
+    float h = (float)(*m_windowSize)[1];
+    if (insideCircle(pos, m_pauseButtonCenter, radius * 0.60f)) {
+      state.role = FingerRole::PauseButton;
+      m_pauseHeld = true;
+      setActionKey(true, Key::Escape, m_pauseKeyHeld);
+    } else if (insideCircle(pos, m_jumpButtonCenter, radius * 0.70f)) {
       state.role = FingerRole::JumpButton;
       m_jumpHeld = true;
+      setActionKey(true, Key::Space, m_jumpKeyHeld);
     } else if (insideCircle(pos, m_interactButtonCenter, radius * 0.65f)) {
       state.role = FingerRole::InteractButton;
       m_interactHeld = true;
+      setActionKey(true, Key::E, m_interactKeyHeld);
     } else if (insideCircle(pos, m_altButtonCenter, radius * 0.65f)) {
       state.role = FingerRole::AltButton;
       m_altHeld = true;
-    } else if (pos[0] < (float)(*m_windowSize)[0] * 0.45f && !m_joystickActive) {
+      if (!m_altMouseHeld) {
+        m_altMouseHeld = true;
+        emitMouseDown(m_altButtonCenter, MouseButton::Right);
+      }
+    } else if (pos[0] < w * 0.35f && pos[1] > h * 0.60f && !m_joystickActive) {
       state.role = FingerRole::Joystick;
       m_joystickActive = true;
       m_joystickFinger = finger;
@@ -258,8 +291,7 @@ private:
 
     if (ptr->role == FingerRole::Joystick) {
       m_joystickCurrent = pos;
-      float shortSide = (float)std::min((*m_windowSize)[0], (*m_windowSize)[1]);
-      float radius = 56.0f * m_config.size * std::max(1.0f, shortSide / 720.0f);
+      float radius = controlRadius();
       Vec2F delta = pos - m_joystickOrigin;
       float mag = delta.magnitude();
       if (mag > radius)
@@ -294,12 +326,22 @@ private:
         break;
       case FingerRole::JumpButton:
         m_jumpHeld = false;
+        setActionKey(false, Key::Space, m_jumpKeyHeld);
         break;
       case FingerRole::InteractButton:
         m_interactHeld = false;
+        setActionKey(false, Key::E, m_interactKeyHeld);
         break;
       case FingerRole::AltButton:
         m_altHeld = false;
+        if (m_altMouseHeld) {
+          m_altMouseHeld = false;
+          emitMouseUp(m_altButtonCenter, MouseButton::Right);
+        }
+        break;
+      case FingerRole::PauseButton:
+        m_pauseHeld = false;
+        setActionKey(false, Key::Escape, m_pauseKeyHeld);
         break;
       default:
         break;
@@ -310,29 +352,20 @@ private:
 
   void updateButtonCenters(float radius) {
     float w = (float)(*m_windowSize)[0];
+    float h = (float)(*m_windowSize)[1];
     float pad = radius * 1.25f;
 
-    m_jumpButtonCenter = Vec2F(w - pad * 1.8f, pad * 1.8f);
-    m_interactButtonCenter = Vec2F(w - pad * 3.2f, pad * 1.0f);
-    m_altButtonCenter = Vec2F(w - pad * 0.7f, pad * 3.3f);
+    m_jumpButtonCenter = Vec2F(w - pad * 1.2f, h - pad * 1.4f);
+    m_interactButtonCenter = Vec2F(w - pad * 2.7f, h - pad * 1.8f);
+    m_altButtonCenter = Vec2F(w - pad * 2.0f, h - pad * 3.1f);
+    m_pauseButtonCenter = Vec2F(pad * 1.35f, pad * 1.15f);
   }
 
   void emitActionEdges() {
     setActionKey(m_moveVec[0] > 0.30f, Key::D, m_rightHeld);
     setActionKey(m_moveVec[0] < -0.30f, Key::A, m_leftHeld);
-    setActionKey(m_moveVec[1] > 0.30f, Key::W, m_upHeld);
-    setActionKey(m_moveVec[1] < -0.30f, Key::S, m_downHeld);
-
-    setActionKey(m_jumpHeld, Key::Space, m_jumpKeyHeld);
-    setActionKey(m_interactHeld, Key::E, m_interactKeyHeld);
-
-    if (m_altHeld && !m_altMouseHeld) {
-      m_altMouseHeld = true;
-      emitMouseDown(m_altButtonCenter, MouseButton::Right);
-    } else if (!m_altHeld && m_altMouseHeld) {
-      m_altMouseHeld = false;
-      emitMouseUp(m_altButtonCenter, MouseButton::Right);
-    }
+    setActionKey(m_moveVec[1] < -0.30f, Key::W, m_upHeld);
+    setActionKey(m_moveVec[1] > 0.30f, Key::S, m_downHeld);
   }
 
   void setActionKey(bool desired, Key key, bool& held) {
@@ -352,6 +385,7 @@ private:
     setActionKey(false, Key::S, m_downHeld);
     setActionKey(false, Key::Space, m_jumpKeyHeld);
     setActionKey(false, Key::E, m_interactKeyHeld);
+    setActionKey(false, Key::Escape, m_pauseKeyHeld);
 
     if (m_altMouseHeld) {
       m_altMouseHeld = false;
@@ -360,15 +394,15 @@ private:
   }
 
   void emitMouseMove(Vec2F const& pos) {
-    m_frameEvents->append(MouseMoveEvent{{0, 0}, pos});
+    m_frameEvents->append(MouseMoveEvent{{0, 0}, toInputSpace(pos)});
   }
 
   void emitMouseDown(Vec2F const& pos, MouseButton button = MouseButton::Left) {
-    m_frameEvents->append(MouseButtonDownEvent{button, pos});
+    m_frameEvents->append(MouseButtonDownEvent{button, toInputSpace(pos)});
   }
 
   void emitMouseUp(Vec2F const& pos, MouseButton button = MouseButton::Left) {
-    m_frameEvents->append(MouseButtonUpEvent{button, pos});
+    m_frameEvents->append(MouseButtonUpEvent{button, toInputSpace(pos)});
   }
 
   static void drawButton(ImDrawList* draw, Vec2F const& center, float radius, bool held, char const* label, ImU32 base, ImU32 fill) {
@@ -394,11 +428,13 @@ private:
   Vec2F m_jumpButtonCenter;
   Vec2F m_interactButtonCenter;
   Vec2F m_altButtonCenter;
+  Vec2F m_pauseButtonCenter;
 
   bool m_primaryHeld = false;
   bool m_jumpHeld = false;
   bool m_interactHeld = false;
   bool m_altHeld = false;
+  bool m_pauseHeld = false;
 
   bool m_rightHeld = false;
   bool m_leftHeld = false;
@@ -406,6 +442,7 @@ private:
   bool m_downHeld = false;
   bool m_jumpKeyHeld = false;
   bool m_interactKeyHeld = false;
+  bool m_pauseKeyHeld = false;
   bool m_altMouseHeld = false;
 };
 
@@ -1163,6 +1200,11 @@ private:
     m_touchAdapter->beginFrame(events);
 
     while (SDL_PollEvent(&event)) {
+      if (event.type != SDL_EVENT_FINGER_DOWN
+          && event.type != SDL_EVENT_FINGER_UP
+          && event.type != SDL_EVENT_FINGER_MOTION) {
+        SDL_ConvertEventToRenderCoordinates(SDL_GetRenderer(m_window), &event);
+      }
       ImGui_ImplSDL3_ProcessEvent(&event);
 
       if (event.type == SDL_EVENT_QUIT) {
@@ -1222,6 +1264,7 @@ private:
   void processWindowEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
+      SDL_ConvertEventToRenderCoordinates(SDL_GetRenderer(m_window), &event);
       ImGui_ImplSDL3_ProcessEvent(&event);
       if (event.type == SDL_EVENT_QUIT)
 #ifdef STAR_SYSTEM_ANDROID
