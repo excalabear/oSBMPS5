@@ -1,4 +1,4 @@
-# OpenStarbound
+# OpenStarbound Mobile
 
 <details>
 <summary><b>What is this?</b></summary>
