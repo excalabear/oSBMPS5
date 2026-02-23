@@ -39,6 +39,11 @@ IF (STAR_PLATFORM_MOBILE)
       mobile/ios/StarIosFileAccessBridge.cpp
       StarRenderer_gles.cpp
     )
+  IF (STAR_SYSTEM_IOS)
+    SET (star_application_SOURCES ${star_application_SOURCES}
+        mobile/ios/StarIosFileAccessBridge.mm
+      )
+  ENDIF ()
 ELSE ()
   SET (star_application_HEADERS ${star_application_HEADERS}
       StarP2PNetworkingService_pc.hpp
@@ -84,6 +89,10 @@ IF (STAR_ENABLE_DISCORD_INTEGRATION)
 ENDIF ()
 
 ADD_LIBRARY (star_application OBJECT ${star_application_SOURCES} ${star_application_HEADERS})
+
+IF (STAR_SYSTEM_IOS)
+  TARGET_COMPILE_OPTIONS(star_application PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+ENDIF ()
 
 IF(STAR_PRECOMPILED_HEADERS)
   TARGET_PRECOMPILE_HEADERS (star_application REUSE_FROM star_core)

@@ -66,6 +66,9 @@ private:
 #ifdef STAR_SYSTEM_ANDROID
     if (auto resolved = AndroidFileAccessBridge::resolveModsDirectory(fallbackModsDirectory))
       return *resolved;
+#elif defined(STAR_SYSTEM_IOS)
+    if (auto resolved = IosFileAccessBridge::resolveModsDirectory(fallbackModsDirectory))
+      return *resolved;
 #endif
     return fallbackModsDirectory;
   }

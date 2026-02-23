@@ -12,6 +12,8 @@
 #include "StarPlatformServices_mobile.hpp"
 #if STAR_SYSTEM_ANDROID
 #include "mobile/android/StarAndroidFileAccessBridge.hpp"
+#elif STAR_SYSTEM_IOS
+#include "mobile/ios/StarIosFileAccessBridge.hpp"
 #endif
 
 #include "SDL3/SDL.h"
@@ -1082,6 +1084,14 @@ private:
       errorMessage = "Failed to load bundled OpenStarbound assets from the app package.";
       return false;
     }
+#elif STAR_SYSTEM_IOS
+    String bundledStorageRoot = File::relativeTo(m_storageRoot, "bundled_assets");
+    if (auto synced = IosFileAccessBridge::syncBundledAssets(bundledStorageRoot)) {
+      bundledAssetsRoot = *synced;
+    } else {
+      errorMessage = "Failed to load bundled OpenStarbound assets from the iOS app package.";
+      return false;
+    }
 #else
     if (auto basePath = SDL_GetBasePath())
       bundledAssetsRoot = File::convertDirSeparators(File::relativeTo(basePath, "../assets"));
@@ -1432,6 +1442,9 @@ private:
     auto fallbackModsPath = File::relativeTo(m_storageRoot, "mods");
 #if STAR_SYSTEM_ANDROID
     if (auto resolvedPath = AndroidFileAccessBridge::resolveModsDirectory(fallbackModsPath))
+      return *resolvedPath;
+#elif STAR_SYSTEM_IOS
+    if (auto resolvedPath = IosFileAccessBridge::resolveModsDirectory(fallbackModsPath))
       return *resolvedPath;
 #endif
     return fallbackModsPath;

@@ -31,6 +31,11 @@ IF (STAR_SYSTEM_ANDROID)
     $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core> $<TARGET_OBJECTS:star_base> $<TARGET_OBJECTS:star_game>
     $<TARGET_OBJECTS:star_application> $<TARGET_OBJECTS:star_rendering> $<TARGET_OBJECTS:star_windowing> $<TARGET_OBJECTS:star_frontend>
     ${star_client_HEADERS} ${star_client_SOURCES} ${star_client_RESOURCES})
+ELSEIF (STAR_SYSTEM_IOS)
+  ADD_EXECUTABLE (starbound MACOSX_BUNDLE
+    $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core> $<TARGET_OBJECTS:star_base> $<TARGET_OBJECTS:star_game>
+    $<TARGET_OBJECTS:star_application> $<TARGET_OBJECTS:star_rendering> $<TARGET_OBJECTS:star_windowing> $<TARGET_OBJECTS:star_frontend>
+    ${star_client_HEADERS} ${star_client_SOURCES} ${star_client_RESOURCES})
 ELSE ()
   ADD_EXECUTABLE (starbound WIN32
     $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core> $<TARGET_OBJECTS:star_base> $<TARGET_OBJECTS:star_game>
@@ -76,6 +81,26 @@ IF (STAR_SYSTEM_ANDROID)
       VERBATIM
     )
   endif()
+ENDIF ()
+
+IF (STAR_SYSTEM_IOS)
+  SET_TARGET_PROPERTIES(starbound PROPERTIES
+    MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.openstarbound.ios"
+    XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_INFOPLIST_KEY_UIFileSharingEnabled "YES"
+    XCODE_ATTRIBUTE_INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace "YES"
+    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleDisplayName "OpenStarbound"
+  )
+
+  SET(STAR_IOS_BUNDLE_ASSETS_SOURCE "${PROJECT_SOURCE_DIR}/../assets/opensb")
+  SET(STAR_IOS_BUNDLE_ASSETS_DEST "$<TARGET_BUNDLE_DIR:starbound>/assets/opensb")
+
+  ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_BUNDLE_ASSETS_DEST}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${STAR_IOS_BUNDLE_ASSETS_SOURCE}" "${STAR_IOS_BUNDLE_ASSETS_DEST}"
+    COMMENT "Copying OpenStarbound bundled assets into iOS app bundle"
+    VERBATIM
+  )
 ENDIF ()
 
 IF (STAR_SYSTEM_MACOS)
