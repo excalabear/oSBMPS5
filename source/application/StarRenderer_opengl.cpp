@@ -7,7 +7,7 @@ namespace Star {
 
 size_t const MultiTextureCount = 4;
 
-#if defined(STAR_SYSTEM_ANDROID)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 char const* DefaultVertexShader = R"SHADER(
 #version 300 es
 
@@ -91,7 +91,7 @@ void main() {
 )SHADER";
 #endif
 
-#if defined(STAR_SYSTEM_ANDROID)
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 char const* DefaultFragmentShader = R"SHADER(
 #version 300 es
 precision mediump float;

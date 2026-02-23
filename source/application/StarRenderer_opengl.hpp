@@ -3,9 +3,14 @@
 #include "StarTextureAtlas.hpp"
 #include "StarRenderer.hpp"
 
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 #if defined(STAR_SYSTEM_ANDROID)
 #include <GLES3/gl3.h>
 #include <GLES3/gl32.h>
+#else
+#include <OpenGLES/ES3/gl.h>
+#include <OpenGLES/ES3/glext.h>
+#endif
 
 #ifndef GLEW_OK
 #define GLEW_OK 0
@@ -39,8 +44,22 @@
 #define GL_BGRA 0x80E1
 #endif
 
+#ifndef GL_TEXTURE_2D_MULTISAMPLE
+#define GL_TEXTURE_2D_MULTISAMPLE 0x9100
+#endif
+
 inline void glTexImage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations) {
+#if defined(STAR_SYSTEM_ANDROID)
   glTexStorage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations);
+#else
+  // Multisampled texture render targets are disabled on iOS in this renderer path.
+  (void)target;
+  (void)samples;
+  (void)internalformat;
+  (void)width;
+  (void)height;
+  (void)fixedsamplelocations;
+#endif
 }
 
 inline int glewInit() {
