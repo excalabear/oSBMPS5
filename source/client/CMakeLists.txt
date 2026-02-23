@@ -49,6 +49,9 @@ ENDIF()
 
 IF(STAR_SYSTEM_MACOS)
   SET_TARGET_PROPERTIES (starbound PROPERTIES LINK_FLAGS "-Wl,-rpath,'@executable_path'")
+ELSEIF(STAR_SYSTEM_IOS)
+  # iOS uses Apple's linker and does not support GNU ld options such as
+  # --export-dynamic. Keep link flags empty here.
 ELSEIF (UNIX)
   SET_TARGET_PROPERTIES (starbound PROPERTIES LINK_FLAGS "-Wl,--export-dynamic,-rpath,'$ORIGIN'")
 ENDIF()
