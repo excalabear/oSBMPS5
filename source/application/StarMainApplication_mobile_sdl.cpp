@@ -27,6 +27,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstring>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -1012,17 +1013,37 @@ private:
 
     ImGui::Text("packed.pak: %s", state.packedPakPath.empty() ? "<not selected>" : state.packedPakPath.utf8Ptr());
 
-    if (ImGui::Button("Pick packed.pak")) {
-      if (auto svc = m_platformServices->externalFileAccessService()) {
-        auto picked = svc->pickPackedPak();
-        if (picked) {
-          state.packedPakPath = *picked;
-          state.lastStatus = "Imported packed.pak";
-          state.lastError.clear();
-        } else {
-          state.lastError = "Native picker unavailable or canceled.";
-        }
+    auto runLauncherAction = [&state](String const& actionName, std::function<void()> const& fn) {
+      try {
+        fn();
+      } catch (std::exception const& e) {
+        state.lastStatus = strf("{} failed.", actionName);
+        state.lastError = strf("({}) {}", actionName, outputException(e, true));
+        Logger::error("Launcher action '{}' failed: {}", actionName, state.lastError);
+      } catch (...) {
+        state.lastStatus = strf("{} failed.", actionName);
+        state.lastError = strf("({}) Unknown runtime failure", actionName);
+        Logger::error("Launcher action '{}' failed: unknown runtime failure", actionName);
       }
+    };
+
+    if (ImGui::Button("Pick packed.pak")) {
+      runLauncherAction("Pick packed.pak", [&]() {
+        if (auto svc = m_platformServices->externalFileAccessService()) {
+          auto picked = svc->pickPackedPak();
+          if (picked) {
+            state.packedPakPath = *picked;
+            state.lastStatus = "Imported packed.pak";
+            state.lastError.clear();
+          } else {
+            state.lastStatus = "No file selected.";
+            state.lastError = "Native picker unavailable or canceled.";
+          }
+        } else {
+          state.lastStatus = "Native picker unavailable.";
+          state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+        }
+      });
     }
 
     ImGui::Separator();
@@ -1030,21 +1051,36 @@ private:
     ImGui::TextWrapped("Current mods directory: %s", modsPath.utf8Ptr());
 
     if (ImGui::Button("Import NEW Mods Folder (Replaces Current)")) {
-      if (auto svc = m_platformServices->externalFileAccessService()) {
-        auto imported = svc->importModFiles();
-        state.lastStatus = imported.empty() ? "No new mods imported." : strf("Imported {} mod(s)", imported.size());
-      }
+      runLauncherAction("Import mods", [&]() {
+        if (auto svc = m_platformServices->externalFileAccessService()) {
+          auto imported = svc->importModFiles();
+          state.lastStatus = imported.empty() ? "No new mods imported." : strf("Imported {} mod(s)", imported.size());
+          if (imported.empty())
+            state.lastError = "No folder selected or import failed.";
+          else
+            state.lastError.clear();
+        } else {
+          state.lastStatus = "Import unavailable.";
+          state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+        }
+      });
     }
 
     if (ImGui::Button("View Current Mods Directory")) {
-      if (auto svc = m_platformServices->externalFileAccessService()) {
-        if (svc->openModsLocationInSystemBrowser()) {
-          state.lastStatus = "Opened current mods directory.";
-          state.lastError.clear();
+      runLauncherAction("Open mods directory", [&]() {
+        if (auto svc = m_platformServices->externalFileAccessService()) {
+          if (svc->openModsLocationInSystemBrowser()) {
+            state.lastStatus = "Opened current mods directory.";
+            state.lastError.clear();
+          } else {
+            state.lastStatus = "Could not open directory.";
+            state.lastError = "Could not open current mods directory in file manager.";
+          }
         } else {
-          state.lastError = "Could not open current mods directory in file manager.";
+          state.lastStatus = "Open directory unavailable.";
+          state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
         }
-      }
+      });
     }
 
     ImGui::Separator();
@@ -1537,8 +1573,12 @@ int runMainApplication(ApplicationUPtr application, StringList cmdLineArgs) {
     __android_log_print(ANDROID_LOG_ERROR, "OpenStarbound", "Unhandled exception in runMainApplication: %s", message.utf8Ptr());
 #endif
     Logger::error("Unhandled exception in runMainApplication: {}", message);
+    // Avoid modal SDL message boxes on iOS fatal paths; they can deadlock app
+    // shutdown if a UIKit presenter is unavailable.
+#if !defined(STAR_SYSTEM_IOS)
     if (SDL_WasInit(SDL_INIT_VIDEO) != 0)
       SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OpenStarbound Mobile", message.utf8Ptr(), nullptr);
+#endif
     return 1;
   } catch (...) {
 #ifdef STAR_SYSTEM_ANDROID
@@ -1546,8 +1586,12 @@ int runMainApplication(ApplicationUPtr application, StringList cmdLineArgs) {
 #endif
     String message = "Unknown fatal runtime error";
     Logger::error("{}", message);
+    // Avoid modal SDL message boxes on iOS fatal paths; they can deadlock app
+    // shutdown if a UIKit presenter is unavailable.
+#if !defined(STAR_SYSTEM_IOS)
     if (SDL_WasInit(SDL_INIT_VIDEO) != 0)
       SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "OpenStarbound Mobile", message.utf8Ptr(), nullptr);
+#endif
     return 1;
   }
 }

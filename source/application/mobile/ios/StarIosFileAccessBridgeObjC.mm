@@ -137,15 +137,46 @@ static UIWindow* activeWindow() {
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  return app.keyWindow;
+  for (UIWindow* window in app.windows) {
+    if (window.isKeyWindow)
+      return window;
+  }
+  for (UIWindow* window in app.windows) {
+    if (!window.hidden)
+      return window;
+  }
 #pragma clang diagnostic pop
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  if (app.keyWindow)
+    return app.keyWindow;
+#pragma clang diagnostic pop
+
+  id<UIApplicationDelegate> delegate = app.delegate;
+  if (delegate && [delegate respondsToSelector:@selector(window)]) {
+    @try {
+      UIWindow* window = [delegate valueForKey:@"window"];
+      if (window)
+        return window;
+    } @catch (NSException* exception) {
+      NSLog(@"[OpenStarbound][iOSBridge] activeWindow delegate lookup exception: %@ (%@)", exception.name, exception.reason);
+    }
+  }
+
+  return nil;
 }
 
 static UIViewController* topViewController() {
   UIWindow* window = activeWindow();
-  UIViewController* controller = window.rootViewController;
-  if (!controller)
+  if (!window)
     return nil;
+
+  UIViewController* controller = window.rootViewController;
+  if (!controller) {
+    controller = [UIViewController new];
+    window.rootViewController = controller;
+  }
 
   while (true) {
     UIViewController* next = controller.presentedViewController;
@@ -416,8 +447,10 @@ static NSArray<NSURL*>* presentOpenPicker(bool folderOnly) {
 
   runOnMainSync(^{
     UIViewController* presenter = topViewController();
-    if (!presenter)
+    if (!presenter) {
+      NSLog(@"[OpenStarbound][iOSBridge] presentOpenPicker: no presenter available");
       return;
+    }
 
     if (@available(iOS 14.0, *)) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
@@ -445,10 +478,13 @@ static NSArray<NSURL*>* presentOpenPicker(bool folderOnly) {
     presented = true;
   });
 
-  if (!presented)
+  if (!presented) {
+    NSLog(@"[OpenStarbound][iOSBridge] presentOpenPicker: picker was not presented");
     return @[];
+  }
 
   if (!waitForSemaphore(semaphore, PickerTimeoutSeconds)) {
+    NSLog(@"[OpenStarbound][iOSBridge] presentOpenPicker: timed out waiting for picker completion");
     runOnMainAsync(^{
       if (picker.presentingViewController)
         [picker dismissViewControllerAnimated:YES completion:nil];
@@ -462,207 +498,247 @@ static NSArray<NSURL*>* presentOpenPicker(bool folderOnly) {
 } // namespace
 
 extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory) {
-  @autoreleasepool {
-    NSString* targetRoot = toNSString(targetRootDirectory);
-    if (targetRoot.length == 0 || !ensureDirectory(targetRoot))
-      return nullptr;
+  @try {
+    @autoreleasepool {
+      NSString* targetRoot = toNSString(targetRootDirectory);
+      if (targetRoot.length == 0 || !ensureDirectory(targetRoot))
+        return nullptr;
 
-    NSString* sourceOpensb = bundledOpensbPath();
-    if (!sourceOpensb)
-      return nullptr;
+      NSString* sourceOpensb = bundledOpensbPath();
+      if (!sourceOpensb)
+        return nullptr;
 
-    NSString* targetOpensb = [targetRoot stringByAppendingPathComponent:@"opensb"];
-    if (!copyBundleTreeIfMissing(sourceOpensb, targetOpensb))
-      return nullptr;
+      NSString* targetOpensb = [targetRoot stringByAppendingPathComponent:@"opensb"];
+      if (!copyBundleTreeIfMissing(sourceOpensb, targetOpensb))
+        return nullptr;
 
-    return copyCString(targetRoot);
+      return copyCString(targetRoot);
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] syncBundledAssets exception: %@ (%@)", exception.name, exception.reason);
+    return nullptr;
   }
 }
 
 extern "C" char* StarIosBridge_pickAndImportPackedPak(char const* targetPath) {
-  @autoreleasepool {
-    NSString* destinationPath = toNSString(targetPath);
-    if (destinationPath.length == 0)
-      return nullptr;
+  @try {
+    @autoreleasepool {
+      NSString* destinationPath = toNSString(targetPath);
+      if (destinationPath.length == 0)
+        return nullptr;
 
-    NSArray<NSURL*>* picked = presentOpenPicker(false);
-    NSURL* selected = picked.firstObject;
-    if (!selected)
-      return nullptr;
+      NSArray<NSURL*>* picked = presentOpenPicker(false);
+      NSURL* selected = picked.firstObject;
+      if (!selected)
+        return nullptr;
 
-    if (!streamCopyUrlToPathAtomic(selected, destinationPath))
-      return nullptr;
+      if (!streamCopyUrlToPathAtomic(selected, destinationPath))
+        return nullptr;
 
-    return copyCString(destinationPath);
+      return copyCString(destinationPath);
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] pickAndImportPackedPak exception: %@ (%@)", exception.name, exception.reason);
+    return nullptr;
   }
 }
 
 extern "C" char* StarIosBridge_resolveModsDirectory(char const* fallbackModsDirectory) {
-  @autoreleasepool {
-    NSString* fallback = toNSString(fallbackModsDirectory);
-    NSString* modsDirectory = preferredModsDirectoryPath(fallback);
-    if (!modsDirectory || !ensureDirectory(modsDirectory))
-      return nullptr;
-    return copyCString(modsDirectory);
+  @try {
+    @autoreleasepool {
+      NSString* fallback = toNSString(fallbackModsDirectory);
+      NSString* modsDirectory = preferredModsDirectoryPath(fallback);
+      if (!modsDirectory || !ensureDirectory(modsDirectory))
+        return nullptr;
+      return copyCString(modsDirectory);
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] resolveModsDirectory exception: %@ (%@)", exception.name, exception.reason);
+    return nullptr;
   }
 }
 
 extern "C" char** StarIosBridge_importModFiles(char const* modsDirectory, int* outCount) {
-  @autoreleasepool {
+  @try {
+    @autoreleasepool {
+      if (outCount)
+        *outCount = 0;
+
+      NSString* targetModsDirectory = toNSString(modsDirectory);
+      if (targetModsDirectory.length == 0)
+        return nullptr;
+      if (!ensureDirectory(targetModsDirectory))
+        return nullptr;
+
+      NSArray<NSURL*>* picked = presentOpenPicker(true);
+      NSURL* selected = picked.firstObject;
+      if (!selected)
+        return nullptr;
+
+      if (!clearDirectoryContents(targetModsDirectory))
+        return nullptr;
+
+      NSMutableArray<NSString*>* imported = [NSMutableArray array];
+
+      NSNumber* isDirectory = nil;
+      [selected getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
+      bool importSuccess = false;
+      if (isDirectory.boolValue) {
+        importSuccess = copyDirectoryUrlContents(selected, targetModsDirectory, imported);
+      } else {
+        NSString* fileName = sanitizedFileName(selected.lastPathComponent, @"mod_file");
+        NSString* target = [targetModsDirectory stringByAppendingPathComponent:fileName];
+        if (streamCopyUrlToPathAtomic(selected, target)) {
+          [imported addObject:target];
+          importSuccess = true;
+        }
+      }
+
+      if (!importSuccess)
+        return nullptr;
+
+      int count = (int)imported.count;
+      if (outCount)
+        *outCount = count;
+      if (count <= 0)
+        return nullptr;
+
+      char** out = static_cast<char**>(std::calloc((size_t)count, sizeof(char*)));
+      if (!out)
+        return nullptr;
+
+      for (int i = 0; i < count; ++i) {
+        out[i] = copyCString(imported[(NSUInteger)i]);
+        if (!out[i]) {
+          for (int j = 0; j <= i; ++j)
+            std::free(out[j]);
+          std::free(out);
+          if (outCount)
+            *outCount = 0;
+          return nullptr;
+        }
+      }
+
+      return out;
+    }
+  } @catch (NSException* exception) {
     if (outCount)
       *outCount = 0;
-
-    NSString* targetModsDirectory = toNSString(modsDirectory);
-    if (targetModsDirectory.length == 0)
-      return nullptr;
-    if (!ensureDirectory(targetModsDirectory))
-      return nullptr;
-
-    NSArray<NSURL*>* picked = presentOpenPicker(true);
-    NSURL* selected = picked.firstObject;
-    if (!selected)
-      return nullptr;
-
-    if (!clearDirectoryContents(targetModsDirectory))
-      return nullptr;
-
-    NSMutableArray<NSString*>* imported = [NSMutableArray array];
-
-    NSNumber* isDirectory = nil;
-    [selected getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
-    bool importSuccess = false;
-    if (isDirectory.boolValue) {
-      importSuccess = copyDirectoryUrlContents(selected, targetModsDirectory, imported);
-    } else {
-      NSString* fileName = sanitizedFileName(selected.lastPathComponent, @"mod_file");
-      NSString* target = [targetModsDirectory stringByAppendingPathComponent:fileName];
-      if (streamCopyUrlToPathAtomic(selected, target)) {
-        [imported addObject:target];
-        importSuccess = true;
-      }
-    }
-
-    if (!importSuccess)
-      return nullptr;
-
-    int count = (int)imported.count;
-    if (outCount)
-      *outCount = count;
-    if (count <= 0)
-      return nullptr;
-
-    char** out = static_cast<char**>(std::calloc((size_t)count, sizeof(char*)));
-    if (!out)
-      return nullptr;
-
-    for (int i = 0; i < count; ++i) {
-      out[i] = copyCString(imported[(NSUInteger)i]);
-      if (!out[i]) {
-        for (int j = 0; j <= i; ++j)
-          std::free(out[j]);
-        std::free(out);
-        if (outCount)
-          *outCount = 0;
-        return nullptr;
-      }
-    }
-
-    return out;
+    NSLog(@"[OpenStarbound][iOSBridge] importModFiles exception: %@ (%@)", exception.name, exception.reason);
+    return nullptr;
   }
 }
 
 extern "C" bool StarIosBridge_openModsDirectory(char const* modsDirectory) {
-  @autoreleasepool {
-    NSString* resolved = toNSString(modsDirectory);
-    if (resolved.length == 0)
-      resolved = preferredModsDirectoryPath(@"");
-    if (!resolved || !ensureDirectory(resolved))
-      return false;
+  @try {
+    @autoreleasepool {
+      NSString* resolved = toNSString(modsDirectory);
+      if (resolved.length == 0)
+        resolved = preferredModsDirectoryPath(@"");
+      if (!resolved || !ensureDirectory(resolved))
+        return false;
 
-    __block bool presented = false;
-    runOnMainSync(^{
-      UIViewController* presenter = topViewController();
-      if (!presenter)
-        return;
+      __block bool presented = false;
+      runOnMainSync(^{
+        UIViewController* presenter = topViewController();
+        if (!presenter)
+          return;
 
-      NSURL* modsUrl = [NSURL fileURLWithPath:resolved isDirectory:YES];
-      if (@available(iOS 14.0, *)) {
+        NSURL* modsUrl = [NSURL fileURLWithPath:resolved isDirectory:YES];
+        if (@available(iOS 14.0, *)) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
-        UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType folder]] asCopy:NO];
-        picker.directoryURL = modsUrl;
-        picker.allowsMultipleSelection = false;
-        picker.modalPresentationStyle = UIModalPresentationFormSheet;
-        [presenter presentViewController:picker animated:YES completion:nil];
-        presented = true;
-        return;
+          UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType folder]] asCopy:NO];
+          picker.directoryURL = modsUrl;
+          picker.allowsMultipleSelection = false;
+          picker.modalPresentationStyle = UIModalPresentationFormSheet;
+          [presenter presentViewController:picker animated:YES completion:nil];
+          presented = true;
+          return;
 #endif
-      }
+        }
 
-      UIActivityViewController* activity = [[UIActivityViewController alloc] initWithActivityItems:@[modsUrl] applicationActivities:nil];
-      [presenter presentViewController:activity animated:YES completion:nil];
-      presented = true;
-    });
+        UIActivityViewController* activity = [[UIActivityViewController alloc] initWithActivityItems:@[modsUrl] applicationActivities:nil];
+        [presenter presentViewController:activity animated:YES completion:nil];
+        presented = true;
+      });
 
-    return presented;
+      return presented;
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] openModsDirectory exception: %@ (%@)", exception.name, exception.reason);
+    return false;
   }
 }
 
 extern "C" void StarIosBridge_showToast(char const* message) {
-  @autoreleasepool {
-    NSString* text = toNSString(message);
-    if (text.length == 0)
-      return;
-
-    runOnMainAsync(^{
-      UIViewController* presenter = topViewController();
-      if (!presenter)
+  @try {
+    @autoreleasepool {
+      NSString* text = toNSString(message);
+      if (text.length == 0)
         return;
 
-      UIAlertController* alert = [UIAlertController alertControllerWithTitle:nil
-                                                                     message:text
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-      [presenter presentViewController:alert animated:YES completion:nil];
-      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (alert.presentingViewController)
-          [alert dismissViewControllerAnimated:YES completion:nil];
+      runOnMainAsync(^{
+        UIViewController* presenter = topViewController();
+        if (!presenter)
+          return;
+
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:nil
+                                                                       message:text
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [presenter presentViewController:alert animated:YES completion:nil];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+          if (alert.presentingViewController)
+            [alert dismissViewControllerAnimated:YES completion:nil];
+        });
       });
-    });
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] showToast exception: %@ (%@)", exception.name, exception.reason);
   }
 }
 
 extern "C" void StarIosBridge_showDialog(char const* title, char const* message) {
-  @autoreleasepool {
-    NSString* nsTitle = toNSString(title);
-    NSString* nsMessage = toNSString(message);
+  @try {
+    @autoreleasepool {
+      NSString* nsTitle = toNSString(title);
+      NSString* nsMessage = toNSString(message);
 
-    runOnMainAsync(^{
-      UIViewController* presenter = topViewController();
-      if (!presenter)
-        return;
+      runOnMainAsync(^{
+        UIViewController* presenter = topViewController();
+        if (!presenter)
+          return;
 
-      UIAlertController* alert = [UIAlertController alertControllerWithTitle:nsTitle
-                                                                     message:nsMessage
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-      [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-      [presenter presentViewController:alert animated:YES completion:nil];
-    });
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:nsTitle
+                                                                       message:nsMessage
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [presenter presentViewController:alert animated:YES completion:nil];
+      });
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] showDialog exception: %@ (%@)", exception.name, exception.reason);
   }
 }
 
 extern "C" bool StarIosBridge_openAppSettings() {
-  __block bool opened = false;
-  runOnMainSync(^{
-    UIApplication* app = UIApplication.sharedApplication;
-    NSURL* settingsUrl = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
-    if (!app || !settingsUrl)
-      return;
-    if (![app canOpenURL:settingsUrl])
-      return;
+  @try {
+    __block bool opened = false;
+    runOnMainSync(^{
+      UIApplication* app = UIApplication.sharedApplication;
+      NSURL* settingsUrl = [NSURL URLWithString:UIApplicationOpenSettingsURLString];
+      if (!app || !settingsUrl)
+        return;
+      if (![app canOpenURL:settingsUrl])
+        return;
 
-    [app openURL:settingsUrl options:@{} completionHandler:nil];
-    opened = true;
-  });
-  return opened;
+      [app openURL:settingsUrl options:@{} completionHandler:nil];
+      opened = true;
+    });
+    return opened;
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] openAppSettings exception: %@ (%@)", exception.name, exception.reason);
+    return false;
+  }
 }
 
 extern "C" void StarIosBridge_freeCString(char* value) {
