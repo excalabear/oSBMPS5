@@ -302,12 +302,41 @@ void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConf
   GLint status = 0;
   char logBuffer[1024];
 
+  auto adaptShaderSourceForMobile = [&](String const& sourceText, GLenum type) -> String {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    String adjusted = sourceText;
+
+    size_t newline = adjusted.find('\n');
+    String versionLine = newline == NPos ? adjusted : adjusted.substr(0, newline);
+    if (versionLine.beginsWith("#version ") && !versionLine.contains("es")) {
+      if (newline == NPos)
+        adjusted = "#version 300 es\n";
+      else
+        adjusted = String("#version 300 es\n") + adjusted.substr(newline + 1);
+    }
+
+    if (type == GL_FRAGMENT_SHADER && !adjusted.contains("precision ")) {
+      size_t firstLineEnd = adjusted.find('\n');
+      if (firstLineEnd == NPos)
+        adjusted += "\nprecision mediump float;\n";
+      else
+        adjusted = adjusted.substr(0, firstLineEnd + 1) + "precision mediump float;\n" + adjusted.substr(firstLineEnd + 1);
+    }
+
+    return adjusted;
+#else
+    _unused(type);
+    return sourceText;
+#endif
+  };
+
   auto compileShader = [&](GLenum type, String const& name) -> GLuint {
     GLuint shader = glCreateShader(type);
     auto* source = shaders.ptr(name);
     if (!source)
       return 0;
-    char const* sourcePtr = source->utf8Ptr();
+    String shaderSource = adaptShaderSourceForMobile(*source, type);
+    char const* sourcePtr = shaderSource.utf8Ptr();
     glShaderSource(shader, 1, &sourcePtr, NULL);
     glCompileShader(shader);
 

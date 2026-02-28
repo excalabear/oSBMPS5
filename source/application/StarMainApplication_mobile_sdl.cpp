@@ -73,6 +73,20 @@ static inline void convertEventToRenderCoordinatesIfPossible(SDL_Window* window,
     SDL_ConvertEventToRenderCoordinates(renderer, event);
 }
 
+static inline bool isTouchDerivedMouseEvent(SDL_Event const& event) {
+#ifdef SDL_TOUCH_MOUSEID
+  if (event.type == SDL_EVENT_MOUSE_MOTION)
+    return event.motion.which == SDL_TOUCH_MOUSEID;
+  if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_UP)
+    return event.button.which == SDL_TOUCH_MOUSEID;
+  if (event.type == SDL_EVENT_MOUSE_WHEEL)
+    return event.wheel.which == SDL_TOUCH_MOUSEID;
+#else
+  _unused(event);
+#endif
+  return false;
+}
+
 Maybe<Key> keyFromSdlKeyCode(SDL_Keycode sym) {
   switch (sym) {
     case SDLK_W: return Key::W;
@@ -219,7 +233,6 @@ public:
 
     drawButton(draw, m_jumpButtonCenter, radius * 0.55f, m_jumpHeld, "J", base, fill);
     drawButton(draw, m_interactButtonCenter, radius * 0.50f, m_interactHeld, "E", base, fill);
-    drawButton(draw, m_altButtonCenter, radius * 0.50f, m_altHeld, "A", base, fill);
     drawButton(draw, m_pauseButtonCenter, radius * 0.52f, m_pauseHeld, "ESC", base, fill);
   }
 
@@ -232,14 +245,19 @@ private:
     None,
     Joystick,
     Aim,
+    SuppressedTap,
+    SecondaryHold,
     JumpButton,
     InteractButton,
-    AltButton,
     PauseButton
   };
 
   struct FingerState {
     FingerRole role = FingerRole::None;
+    Vec2F startPos;
+    Vec2F currentPos;
+    int64_t downTimeMs = 0;
+    bool movedTooFarForTap = false;
   };
 
   static bool insideCircle(Vec2F const& p, Vec2F const& center, float radius) {
@@ -249,6 +267,24 @@ private:
   float controlRadius() const {
     float shortSide = (float)std::min((*m_windowSize)[0], (*m_windowSize)[1]);
     return 56.0f * m_config.size * std::max(1.0f, shortSide / 720.0f);
+  }
+
+  float tapMovementThreshold() const {
+    return controlRadius() * 0.35f;
+  }
+
+  bool isTap(FingerState const& state, Vec2F const& releasePos) const {
+    if (state.movedTooFarForTap)
+      return false;
+    if (Time::monotonicMilliseconds() - state.downTimeMs > 220)
+      return false;
+    return (releasePos - state.startPos).magnitude() <= tapMovementThreshold();
+  }
+
+  void trackTapMotion(FingerState& state, Vec2F const& pos) {
+    state.currentPos = pos;
+    if (!state.movedTooFarForTap && (pos - state.startPos).magnitude() > tapMovementThreshold())
+      state.movedTooFarForTap = true;
   }
 
   Vec2F toScreen(float x, float y) const {
@@ -282,6 +318,9 @@ private:
     updateButtonCenters(radius);
 
     FingerState state;
+    state.startPos = pos;
+    state.currentPos = pos;
+    state.downTimeMs = Time::monotonicMilliseconds();
     float w = (float)(*m_windowSize)[0];
     float h = (float)(*m_windowSize)[1];
     if (insideCircle(pos, m_pauseButtonCenter, radius * 0.60f)) {
@@ -293,13 +332,6 @@ private:
     } else if (insideCircle(pos, m_interactButtonCenter, radius * 0.65f)) {
       state.role = FingerRole::InteractButton;
       m_interactHeld = true;
-    } else if (insideCircle(pos, m_altButtonCenter, radius * 0.65f)) {
-      state.role = FingerRole::AltButton;
-      m_altHeld = true;
-      if (!m_altMouseHeld) {
-        m_altMouseHeld = true;
-        emitMouseDown(m_altButtonCenter, MouseButton::Right);
-      }
     } else if (pos[0] < w * 0.35f && pos[1] > h * 0.60f && !m_joystickActive) {
       state.role = FingerRole::Joystick;
       m_joystickActive = true;
@@ -307,6 +339,26 @@ private:
       m_joystickOrigin = pos;
       m_joystickCurrent = pos;
       m_moveVec = {};
+    } else if (m_joystickActive && insideCircle(pos, m_joystickOrigin, radius * 1.35f)) {
+      // Prevent accidental aiming while thumb rides around the virtual joystick.
+      // Quick taps in this region still become UI clicks on release.
+      state.role = FingerRole::SuppressedTap;
+    } else if (m_primaryHeld && m_aimFinger != finger && !m_secondaryHeld) {
+      state.role = FingerRole::SecondaryHold;
+      m_secondaryHeld = true;
+      m_secondaryFinger = finger;
+      m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
+
+      // Let right-click behavior take precedence while secondary gesture is held.
+      if (m_primaryMouseHeld) {
+        emitMouseUp(m_primaryTouchPos);
+        m_primaryMouseHeld = false;
+        m_primaryPausedForSecondary = true;
+      }
+
+      m_secondaryMouseHeld = true;
+      emitMouseMove(m_secondaryTouchPos);
+      emitMouseDown(m_secondaryTouchPos, MouseButton::Right);
     } else {
       state.role = FingerRole::Aim;
       m_aimFinger = finger;
@@ -325,6 +377,8 @@ private:
     if (!ptr)
       return;
 
+    trackTapMotion(*ptr, pos);
+
     if (ptr->role == FingerRole::Joystick) {
       m_joystickCurrent = pos;
       float radius = controlRadius();
@@ -341,6 +395,9 @@ private:
     } else if (ptr->role == FingerRole::Aim) {
       m_primaryTouchPos = pos;
       emitMouseMove(pos);
+    } else if (ptr->role == FingerRole::SecondaryHold && m_secondaryMouseHeld) {
+      m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
+      emitMouseMove(m_secondaryTouchPos);
     }
   }
 
@@ -349,8 +406,12 @@ private:
     if (!ptr)
       return;
 
+    bool tap = isTap(*ptr, pos);
+
     switch (ptr->role) {
       case FingerRole::Joystick:
+        if (tap && m_moveVec.magnitudeSquared() <= m_config.deadzone * m_config.deadzone)
+          emitMouseClick(pos);
         m_joystickActive = false;
         m_moveVec = {};
         m_joystickFinger = 0;
@@ -363,18 +424,36 @@ private:
         m_primaryHeld = false;
         m_aimFinger = 0;
         break;
+      case FingerRole::SuppressedTap:
+        if (tap)
+          emitMouseClick(pos);
+        break;
+      case FingerRole::SecondaryHold:
+        if (m_secondaryMouseHeld && m_secondaryFinger == finger) {
+          m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
+          emitMouseMove(m_secondaryTouchPos);
+          emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+          m_secondaryMouseHeld = false;
+        } else if (tap) {
+          Vec2F target = m_primaryHeld ? m_primaryTouchPos : pos;
+          emitMouseMove(target);
+          emitMouseClick(target, MouseButton::Right);
+        }
+        m_secondaryHeld = false;
+        m_secondaryFinger = 0;
+
+        if (m_primaryPausedForSecondary && m_primaryHeld && !m_primaryMouseHeld) {
+          emitMouseMove(m_primaryTouchPos);
+          emitMouseDown(m_primaryTouchPos);
+          m_primaryMouseHeld = true;
+        }
+        m_primaryPausedForSecondary = false;
+        break;
       case FingerRole::JumpButton:
         m_jumpHeld = false;
         break;
       case FingerRole::InteractButton:
         m_interactHeld = false;
-        break;
-      case FingerRole::AltButton:
-        m_altHeld = false;
-        if (m_altMouseHeld) {
-          m_altMouseHeld = false;
-          emitMouseUp(m_altButtonCenter, MouseButton::Right);
-        }
         break;
       case FingerRole::PauseButton:
         m_pauseHeld = false;
@@ -393,7 +472,6 @@ private:
 
     m_jumpButtonCenter = Vec2F(w - pad * 1.2f, h - pad * 1.4f);
     m_interactButtonCenter = Vec2F(w - pad * 2.7f, h - pad * 1.8f);
-    m_altButtonCenter = Vec2F(w - pad * 2.0f, h - pad * 3.1f);
     m_pauseButtonCenter = Vec2F(pad * 1.35f, pad * 1.15f);
   }
 
@@ -406,15 +484,7 @@ private:
     setActionKey(m_interactHeld, Key::E, m_interactKeyHeld);
     setActionKey(m_pauseHeld, Key::Escape, m_pauseKeyHeld);
 
-    if (m_altHeld && !m_altMouseHeld) {
-      m_altMouseHeld = true;
-      emitMouseDown(m_altButtonCenter, MouseButton::Right);
-    } else if (!m_altHeld && m_altMouseHeld) {
-      m_altMouseHeld = false;
-      emitMouseUp(m_altButtonCenter, MouseButton::Right);
-    }
-
-    if (m_primaryHeld && !m_primaryMouseHeld) {
+    if (m_primaryHeld && !m_primaryMouseHeld && !m_secondaryMouseHeld) {
       m_primaryMouseHeld = true;
       emitMouseMove(m_primaryTouchPos);
       emitMouseDown(m_primaryTouchPos);
@@ -443,15 +513,18 @@ private:
     setActionKey(false, Key::E, m_interactKeyHeld);
     setActionKey(false, Key::Escape, m_pauseKeyHeld);
 
-    if (m_altMouseHeld) {
-      m_altMouseHeld = false;
-      emitMouseUp(m_altButtonCenter, MouseButton::Right);
-    }
-
     if (m_primaryMouseHeld) {
       m_primaryMouseHeld = false;
       emitMouseUp(m_primaryTouchPos);
     }
+    if (m_secondaryMouseHeld) {
+      m_secondaryMouseHeld = false;
+      emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+    }
+
+    m_secondaryHeld = false;
+    m_secondaryFinger = 0;
+    m_primaryPausedForSecondary = false;
   }
 
   void emitMouseMove(Vec2F const& pos) {
@@ -464,6 +537,11 @@ private:
 
   void emitMouseUp(Vec2F const& pos, MouseButton button = MouseButton::Left) {
     emitEvent(MouseButtonUpEvent{button, toInputSpace(pos)});
+  }
+
+  void emitMouseClick(Vec2F const& pos, MouseButton button = MouseButton::Left) {
+    emitMouseDown(pos, button);
+    emitMouseUp(pos, button);
   }
 
   void emitEvent(InputEvent const& event) {
@@ -492,15 +570,20 @@ private:
 
   Vec2F m_jumpButtonCenter;
   Vec2F m_interactButtonCenter;
-  Vec2F m_altButtonCenter;
   Vec2F m_pauseButtonCenter;
 
   bool m_primaryHeld = false;
   bool m_primaryMouseHeld = false;
   Vec2F m_primaryTouchPos;
+  bool m_primaryPausedForSecondary = false;
+
+  bool m_secondaryHeld = false;
+  bool m_secondaryMouseHeld = false;
+  uint64_t m_secondaryFinger = 0;
+  Vec2F m_secondaryTouchPos;
+
   bool m_jumpHeld = false;
   bool m_interactHeld = false;
-  bool m_altHeld = false;
   bool m_pauseHeld = false;
 
   bool m_rightHeld = false;
@@ -510,7 +593,6 @@ private:
   bool m_jumpKeyHeld = false;
   bool m_interactKeyHeld = false;
   bool m_pauseKeyHeld = false;
-  bool m_altMouseHeld = false;
 };
 
 class MobilePlatform {
@@ -684,15 +766,18 @@ private:
 
     void setAcceptingTextInput(bool acceptingTextInput) override {
 #ifdef STAR_SYSTEM_ANDROID
-      // Keep mobile startup/input path stable by avoiding direct SDL IME
-      // toggles during runtime initialization.
+      // Apply IME state from the main loop so startup and SDL lifecycle remain
+      // stable on Android while still opening the native keyboard for textboxes.
       parent->m_textInput = acceptingTextInput;
+      parent->m_textInputDirty = true;
 #else
       if (acceptingTextInput)
         SDL_StartTextInput(parent->m_window);
       else
         SDL_StopTextInput(parent->m_window);
       parent->m_textInput = acceptingTextInput;
+      parent->m_textInputApplied = acceptingTextInput;
+      parent->m_textInputDirty = false;
 #endif
     }
 
@@ -1350,6 +1435,7 @@ private:
     m_renderTicker.reset();
 
     while (!m_quitRequested && !m_softQuitRequested) {
+      syncTextInputState();
       auto inputEvents = processEvents();
 
       for (auto const& event : inputEvents)
@@ -1411,6 +1497,12 @@ private:
       m_application->shutdown();
     } catch (...) {
     }
+#ifdef STAR_SYSTEM_ANDROID
+    if (m_textInputApplied && m_window)
+      SDL_StopTextInput(m_window);
+    m_textInputApplied = false;
+    m_textInputDirty = false;
+#endif
     m_application.reset();
   }
 
@@ -1424,12 +1516,13 @@ private:
     m_touchAdapter->beginFrame();
 
     while (SDL_PollEvent(&event)) {
+      bool touchDerivedMouse = overlayEnabled && isTouchDerivedMouseEvent(event);
       if (event.type != SDL_EVENT_FINGER_DOWN
           && event.type != SDL_EVENT_FINGER_UP
           && event.type != SDL_EVENT_FINGER_MOTION) {
         convertEventToRenderCoordinatesIfPossible(m_window, &event);
       }
-      if (overlayEnabled)
+      if (overlayEnabled && !touchDerivedMouse)
         ImGui_ImplSDL3_ProcessEvent(&event);
 
       if (event.type == SDL_EVENT_QUIT) {
@@ -1451,6 +1544,8 @@ private:
       }
 
       if (m_touchAdapter->processSdlEvent(event))
+        continue;
+      if (touchDerivedMouse)
         continue;
 
       Maybe<InputEvent> input;
@@ -1511,6 +1606,23 @@ private:
     io.FontGlobalScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
   }
 
+  void syncTextInputState() {
+#ifdef STAR_SYSTEM_ANDROID
+    if (!m_window)
+      return;
+    if (!m_textInputDirty && m_textInputApplied == m_textInput)
+      return;
+
+    if (m_textInput && !m_textInputApplied)
+      SDL_StartTextInput(m_window);
+    else if (!m_textInput && m_textInputApplied)
+      SDL_StopTextInput(m_window);
+
+    m_textInputApplied = m_textInput;
+    m_textInputDirty = false;
+#endif
+  }
+
   String modsDirectoryPath() const {
     auto fallbackModsPath = File::relativeTo(m_storageRoot, "mods");
 #if STAR_SYSTEM_ANDROID
@@ -1535,6 +1647,8 @@ private:
   bool m_cursorVisible = true;
   bool m_cursorHardware = false;
   bool m_textInput = false;
+  bool m_textInputApplied = false;
+  bool m_textInputDirty = false;
   bool m_audioEnabled = false;
   SDL_AudioStream* m_sdlAudioOutputStream = nullptr;
   std::vector<uint8_t> m_audioOutputData;
