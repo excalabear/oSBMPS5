@@ -467,8 +467,12 @@ void ClientApplication::processInput(InputEvent const& event) {
     } else if (m_state == MainAppState::SinglePlayer || m_state == MainAppState::MultiPlayer) {
 #if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
       // On mobile, route gameplay UI input first so touch interaction keeps
-      // working even if a cinematic overlay reports suppressInput.
-      if (!(processed = m_mainInterface->handleInputEvent(event)))
+      // working even if a cinematic overlay reports suppressInput.  Escape is
+      // still a real Escape key, though, so cinematics get first chance to
+      // consume it for skipping before the pause dialog sees it.
+      if (auto keyDown = event.ptr<KeyDownEvent>(); keyDown && keyDown->key == Key::Escape)
+        processed = m_cinematicOverlay->handleInputEvent(event);
+      if (!processed && !(processed = m_mainInterface->handleInputEvent(event)))
         processed = m_cinematicOverlay->handleInputEvent(event);
 #else
       if (!(processed = m_cinematicOverlay->handleInputEvent(event)))

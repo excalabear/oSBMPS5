@@ -291,15 +291,7 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   }
 
   if (event.is<KeyDownEvent>()) {
-    auto keyDown = event.ptr<KeyDownEvent>();
     auto actions = m_guiContext->actions(event);
-
-    // Mobile virtual pause emits Escape directly and should always open/close the
-    // pause dialog even if a widget currently has keyboard capture.
-    if (keyDown && keyDown->key == Key::Escape) {
-      m_paneManager.toggleRegisteredPane(MainInterfacePanes::EscapeDialog);
-      return true;
-    }
 
     if (m_chat->hasFocus()) {
       if (actions.contains(InterfaceAction::ChatSendLine)) {
