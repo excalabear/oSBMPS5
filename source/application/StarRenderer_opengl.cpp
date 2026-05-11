@@ -10,6 +10,7 @@ size_t const MultiTextureCount = 4;
 namespace {
 
 String normalizeShaderSource(String const& sourceText, GLenum type) {
+  _unused(type);
   String adjusted = sourceText.trimBeg();
 
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
@@ -22,15 +23,14 @@ String normalizeShaderSource(String const& sourceText, GLenum type) {
       adjusted = String("#version 300 es\n") + adjusted.substr(newline + 1);
   }
 
-  if (type == GL_FRAGMENT_SHADER && !adjusted.contains("precision ")) {
+  if (!adjusted.contains("precision ")) {
     size_t firstLineEnd = adjusted.find('\n');
+    String precisionBlock = "precision highp float;\nprecision highp int;\n";
     if (firstLineEnd == NPos)
-      adjusted += "\nprecision mediump float;\n";
+      adjusted += "\n" + precisionBlock;
     else
-      adjusted = adjusted.substr(0, firstLineEnd + 1) + "precision mediump float;\n" + adjusted.substr(firstLineEnd + 1);
+      adjusted = adjusted.substr(0, firstLineEnd + 1) + precisionBlock + adjusted.substr(firstLineEnd + 1);
   }
-#else
-  _unused(type);
 #endif
 
   return adjusted;
@@ -41,6 +41,8 @@ String normalizeShaderSource(String const& sourceText, GLenum type) {
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 char const* DefaultVertexShader = R"SHADER(
 #version 300 es
+precision highp float;
+precision highp int;
 
 uniform vec2 textureSize0;
 uniform vec2 textureSize1;
@@ -60,11 +62,11 @@ out vec4 fragmentColor;
 
 void main() {
   vec2 screenPosition = (vertexTransform * vec3(vertexPosition, 1.0)).xy;
-  gl_Position = vec4(screenPosition / screenSize * 2.0 - 1.0, 0.0, 1.0);
   if (((vertexData >> 3) & 0x1) == 1)
     screenPosition.x = round(screenPosition.x);
   if (((vertexData >> 4) & 0x1) == 1)
     screenPosition.y = round(screenPosition.y);
+  gl_Position = vec4(screenPosition / screenSize * 2.0 - 1.0, 0.0, 1.0);
   int vertexTextureIndex = vertexData & 0x3;
   if (vertexTextureIndex == 3)
     fragmentTextureCoordinate = vertexTextureCoordinate / textureSize3;
@@ -101,11 +103,11 @@ out vec4 fragmentColor;
 
 void main() {
   vec2 screenPosition = (vertexTransform * vec3(vertexPosition, 1.0)).xy;
-  gl_Position = vec4(screenPosition / screenSize * 2.0 - 1.0, 0.0, 1.0);
   if (((vertexData >> 3) & 0x1) == 1)
     screenPosition.x = round(screenPosition.x);
   if (((vertexData >> 4) & 0x1) == 1)
     screenPosition.y = round(screenPosition.y);
+  gl_Position = vec4(screenPosition / screenSize * 2.0 - 1.0, 0.0, 1.0);
   int vertexTextureIndex = vertexData & 0x3;
   if (vertexTextureIndex == 3)
     fragmentTextureCoordinate = vertexTextureCoordinate / textureSize3;
@@ -125,7 +127,8 @@ void main() {
 #if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
 char const* DefaultFragmentShader = R"SHADER(
 #version 300 es
-precision mediump float;
+precision highp float;
+precision highp int;
 
 uniform sampler2D texture0;
 uniform sampler2D texture1;
