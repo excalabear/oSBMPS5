@@ -91,8 +91,12 @@ Vec2U GuiContext::windowInterfaceSize() const {
 }
 
 float GuiContext::interfaceScale() const {
+#ifdef STAR_SYSTEM_IOS
+  return m_interfaceScale;
+#else
   float DisplayScale {std::max(1.0f, std::round(getDisplayScale()))};
   return m_interfaceScale * DisplayScale;
+#endif
 }
 
 void GuiContext::setInterfaceScale(float interfaceScale) {

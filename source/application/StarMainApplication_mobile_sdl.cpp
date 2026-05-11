@@ -14,6 +14,7 @@
 #include "mobile/android/StarAndroidFileAccessBridge.hpp"
 #elif STAR_SYSTEM_IOS
 #include "mobile/ios/StarIosFileAccessBridge.hpp"
+extern "C" void StarIosBridge_setSdlWindow(void* window);
 #endif
 
 #include "SDL3/SDL.h"
@@ -36,6 +37,9 @@
 #endif
 
 namespace Star {
+
+String getMobileStartupStatus();
+void setMobileStartupStatus(String const& status);
 
 namespace {
 
@@ -718,7 +722,7 @@ private:
 
     void setApplicationTitle(String title) override {
       parent->m_windowTitle = std::move(title);
-#ifdef STAR_SYSTEM_ANDROID
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
       // Avoid activity title churn on Android; keep immersive surface stable.
       _unused(parent);
 #else
@@ -760,9 +764,9 @@ private:
     }
 
     void setCursorPosition(Vec2I cursorPosition) override {
-#ifdef STAR_SYSTEM_ANDROID
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
       // Cursor warping is desktop-only and can trigger unstable window/input
-      // interactions on Android.
+      // interactions on mobile.
       _unused(parent);
       _unused(cursorPosition);
 #else
@@ -779,9 +783,9 @@ private:
     }
 
     void setAcceptingTextInput(bool acceptingTextInput) override {
-#ifdef STAR_SYSTEM_ANDROID
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
       // Apply IME state from the main loop so startup and SDL lifecycle remain
-      // stable on Android while still opening the native keyboard for textboxes.
+      // stable on mobile while still opening the native keyboard for textboxes.
       parent->m_textInput = acceptingTextInput;
       parent->m_textInputDirty = true;
 #else
@@ -796,7 +800,7 @@ private:
     }
 
     void setTextArea(Maybe<pair<RectI, int>> area = {}) override {
-#ifdef STAR_SYSTEM_ANDROID
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
       _unused(parent);
       _unused(area);
 #else
@@ -1010,6 +1014,10 @@ private:
     if (!m_window)
       throw ApplicationException::format("Could not create SDL window: {}", SDL_GetError());
 
+#ifdef STAR_SYSTEM_IOS
+    StarIosBridge_setSdlWindow(m_window);
+#endif
+
     m_glContext = SDL_GL_CreateContext(m_window);
     if (!m_glContext)
       throw ApplicationException::format("Could not create GLES context: {}", SDL_GetError());
@@ -1057,6 +1065,9 @@ private:
     m_glContext = nullptr;
     m_window = nullptr;
     return;
+#endif
+#ifdef STAR_SYSTEM_IOS
+    StarIosBridge_setSdlWindow(nullptr);
 #endif
     if (m_glContext) {
       SDL_GL_DestroyContext(m_glContext);
@@ -1133,9 +1144,10 @@ private:
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    float margin = std::max(10.0f, (float)std::min(m_windowSize[0], m_windowSize[1]) * 0.0125f);
+    ImVec2 displaySize = imguiDisplaySize();
+    float margin = std::max(10.0f, std::min(displaySize.x, displaySize.y) * 0.0125f);
     ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2((float)m_windowSize[0] - margin * 2.0f, (float)m_windowSize[1] - margin * 2.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
     ImGui::Begin(
       "OpenStarbound Mobile Loader",
       nullptr,
@@ -1480,6 +1492,7 @@ private:
               MutexLocker locker(*startupStatusMutex);
               *startupStatus = "Loading game assets and configuration...";
             }
+            setMobileStartupStatus("Loading game assets and configuration...");
             androidLogInfo("startApplication(worker): application->startup begin");
             m_application->startup(m_runtimeArgs);
             androidLogInfo("startApplication(worker): application->startup done");
@@ -1510,6 +1523,9 @@ private:
           MutexLocker locker(*startupStatusMutex);
           status = *startupStatus;
         }
+        auto detailedStatus = getMobileStartupStatus();
+        if (!detailedStatus.empty())
+          status = detailedStatus;
         renderStartupScreen(status);
         int64_t now = Time::monotonicMilliseconds();
         if (now - lastProgressLog >= 5000) {
@@ -1533,12 +1549,25 @@ private:
         return false;
       }
 
+      setMobileStartupStatus("Initializing game controller...");
+      renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: make Controller");
       m_appController = make_shared<Controller>(this);
+      setMobileStartupStatus("Initializing game systems...");
+      renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: applicationInit");
       m_application->applicationInit(m_appController);
+      setMobileStartupStatus("Initializing renderer...");
+      renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: renderInit");
+#ifdef STAR_SYSTEM_IOS
+      SDL_GL_MakeCurrent(m_window, m_glContext);
+#endif
       m_application->renderInit(m_renderer);
+      setMobileStartupStatus("Renderer initialized...");
+      renderStartupScreen(getMobileStartupStatus());
+      setMobileStartupStatus("Initializing touch controls...");
+      renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
       m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize);
 
@@ -1578,9 +1607,10 @@ private:
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    float margin = std::max(10.0f, (float)std::min(m_windowSize[0], m_windowSize[1]) * 0.0125f);
+    ImVec2 displaySize = imguiDisplaySize();
+    float margin = std::max(10.0f, std::min(displaySize.x, displaySize.y) * 0.0125f);
     ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2((float)m_windowSize[0] - margin * 2.0f, (float)m_windowSize[1] - margin * 2.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
     ImGui::Begin(
       "OpenStarbound Mobile Loader",
       nullptr,
@@ -1604,6 +1634,9 @@ private:
     m_renderTicker.reset();
 
     while (!m_quitRequested && !m_softQuitRequested) {
+#ifdef STAR_SYSTEM_IOS
+      SDL_GL_MakeCurrent(m_window, m_glContext);
+#endif
       syncWindowMetrics(true);
       syncTextInputState();
       auto inputEvents = processEvents();
@@ -1837,8 +1870,29 @@ private:
       return;
 
     auto& io = ImGui::GetIO();
+#ifdef STAR_SYSTEM_IOS
+    float pixelScale = std::max(1.0f, std::round(m_displayScale));
+    float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]) / pixelScale;
+    io.FontGlobalScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
+#else
     float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]);
     io.FontGlobalScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
+#endif
+  }
+
+  ImVec2 imguiDisplaySize() const {
+    if (ImGui::GetCurrentContext()) {
+      ImVec2 displaySize = ImGui::GetIO().DisplaySize;
+      if (displaySize.x > 0.0f && displaySize.y > 0.0f)
+        return displaySize;
+    }
+
+#ifdef STAR_SYSTEM_IOS
+    float pixelScale = std::max(1.0f, std::round(m_displayScale));
+    return ImVec2((float)m_windowSize[0] / pixelScale, (float)m_windowSize[1] / pixelScale);
+#else
+    return ImVec2((float)m_windowSize[0], (float)m_windowSize[1]);
+#endif
   }
 
   void syncTextInputState() {

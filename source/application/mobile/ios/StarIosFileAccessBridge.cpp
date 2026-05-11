@@ -7,7 +7,9 @@ extern "C" {
 char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory);
 char* StarIosBridge_pickAndImportPackedPak(char const* targetPath);
 char* StarIosBridge_resolveModsDirectory(char const* fallbackModsDirectory);
-char** StarIosBridge_importModFiles(char const* modsDirectory, int* outCount);
+char** StarIosBridge_importModPakFiles(char const* modsDirectory, int* outCount);
+char** StarIosBridge_importSingleModFolder(char const* modsDirectory, int* outCount);
+char** StarIosBridge_importModsDirectory(char const* modsDirectory, int* outCount);
 bool StarIosBridge_openModsDirectory(char const* modsDirectory);
 void StarIosBridge_showToast(char const* message);
 void StarIosBridge_showDialog(char const* title, char const* message);
@@ -55,11 +57,11 @@ Maybe<String> IosFileAccessBridge::resolveModsDirectory(String const& fallbackMo
 #endif
 }
 
-static StringList importModFilesInternal(String const& modsDirectory) {
 #ifdef STAR_SYSTEM_IOS
+static StringList importModFilesInternal(char** (*importFn)(char const*, int*), String const& modsDirectory) {
   StringList out;
   int count = 0;
-  char** values = StarIosBridge_importModFiles(modsDirectory.utf8Ptr(), &count);
+  char** values = importFn(modsDirectory.utf8Ptr(), &count);
   if (!values || count <= 0) {
     if (values)
       StarIosBridge_freeCStringArray(values, count);
@@ -73,22 +75,34 @@ static StringList importModFilesInternal(String const& modsDirectory) {
 
   StarIosBridge_freeCStringArray(values, count);
   return out;
+}
+#endif
+
+StringList IosFileAccessBridge::importModPakFiles(String const& modsDirectory) {
+#ifdef STAR_SYSTEM_IOS
+  return importModFilesInternal(StarIosBridge_importModPakFiles, modsDirectory);
 #else
   (void)modsDirectory;
   return {};
 #endif
 }
 
-StringList IosFileAccessBridge::importModPakFiles(String const& modsDirectory) {
-  return importModFilesInternal(modsDirectory);
-}
-
 StringList IosFileAccessBridge::importSingleModFolder(String const& modsDirectory) {
-  return importModFilesInternal(modsDirectory);
+#ifdef STAR_SYSTEM_IOS
+  return importModFilesInternal(StarIosBridge_importSingleModFolder, modsDirectory);
+#else
+  (void)modsDirectory;
+  return {};
+#endif
 }
 
 StringList IosFileAccessBridge::importModsDirectory(String const& modsDirectory) {
-  return importModFilesInternal(modsDirectory);
+#ifdef STAR_SYSTEM_IOS
+  return importModFilesInternal(StarIosBridge_importModsDirectory, modsDirectory);
+#else
+  (void)modsDirectory;
+  return {};
+#endif
 }
 
 bool IosFileAccessBridge::openModsDirectory(String const& modsDirectory) {

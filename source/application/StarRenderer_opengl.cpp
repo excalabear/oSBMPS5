@@ -7,7 +7,22 @@ namespace Star {
 
 size_t const MultiTextureCount = 4;
 
+void setMobileStartupStatus(String const& status);
+
 namespace {
+
+#if defined(STAR_SYSTEM_IOS)
+GLenum constexpr FrameBufferTextureFormat = GL_RGBA;
+#else
+GLenum constexpr FrameBufferTextureFormat = GL_RGB;
+#endif
+
+Vec2U framebufferTextureSize(Vec2U size, unsigned sizeDiv) {
+  return {
+    std::max(1u, size[0] / std::max(1u, sizeDiv)),
+    std::max(1u, size[1] / std::max(1u, sizeDiv))
+  };
+}
 
 String normalizeShaderSource(String const& sourceText, GLenum type) {
   _unused(type);
@@ -255,6 +270,7 @@ Vec2U OpenGlRenderer::screenSize() const {
 }
 
 OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbConfig) {
+  setMobileStartupStatus("Renderer: creating framebuffer texture...");
   texture = make_ref<GlLoneTexture>();
   texture->textureFiltering = TextureFiltering::Nearest;
   texture->textureAddressing = TextureAddressing::Clamp;
@@ -268,12 +284,12 @@ OpenGlRenderer::GlFrameBuffer::GlFrameBuffer(Json const& fbConfig) : config(fbCo
   glBindTexture(target, texture->glTextureId());
 
   sizeDiv = config.getUInt("sizeDiv", 1);
-  Vec2U size = jsonToVec2U(config.getArray("size", { 256, 256 })) / sizeDiv;
+  Vec2U size = framebufferTextureSize(jsonToVec2U(config.getArray("size", { 256, 256 })), sizeDiv);
 
   if (multisample)
     glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, size[0], size[1], GL_TRUE);
   else {
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, size[0], size[1], 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, FrameBufferTextureFormat, size[0], size[1], 0, FrameBufferTextureFormat, GL_UNSIGNED_BYTE, NULL);
   }
   auto addressing = TextureAddressingNames.getLeft(config.getString("textureAddressing", "clamp"));
   auto filtering = TextureFilteringNames.getLeft(config.getString("textureFiltering", "nearest"));
@@ -313,9 +329,11 @@ OpenGlRenderer::GlFrameBuffer::~GlFrameBuffer() {
 }
 
 void OpenGlRenderer::loadConfig(Json const& config) {
+  setMobileStartupStatus("Renderer: resetting framebuffer configuration...");
   m_frameBuffers.clear();
 
   for (auto& pair : config.getObject("frameBuffers", {})) {
+    setMobileStartupStatus(strf("Renderer: creating framebuffer {}...", pair.first));
     Json config = pair.second;
     config = config.set("multisample", m_multiSampling);
     Logger::info("Creating framebuffer {}", pair.first);
@@ -327,6 +345,7 @@ void OpenGlRenderer::loadConfig(Json const& config) {
 }
 
 void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConfig, StringMap<String> const& shaders) {
+  setMobileStartupStatus(strf("Renderer: compiling {} shader program...", name));
   if (auto effect = m_effects.ptr(name)) {
     Logger::info("Reloading OpenGL effect {}", name);
     glDeleteProgram(effect->program);
@@ -734,12 +753,13 @@ void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
 
   for (auto& frameBuffer : m_frameBuffers) {
     unsigned sizeDiv = frameBuffer.second->sizeDiv;
+    Vec2U textureSize = framebufferTextureSize(m_screenSize, sizeDiv);
     if (unsigned multisample = frameBuffer.second->multisample) {
       glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, frameBuffer.second->texture->glTextureId());
-      glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, m_screenSize[0] / sizeDiv, m_screenSize[1] / sizeDiv, GL_TRUE);
+      glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, multisample, GL_RGBA8, textureSize[0], textureSize[1], GL_TRUE);
     } else {
       glBindTexture(GL_TEXTURE_2D, frameBuffer.second->texture->glTextureId());
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, m_screenSize[0] / sizeDiv, m_screenSize[1] / sizeDiv, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+      glTexImage2D(GL_TEXTURE_2D, 0, FrameBufferTextureFormat, textureSize[0], textureSize[1], 0, FrameBufferTextureFormat, GL_UNSIGNED_BYTE, NULL);
     }
   }
 }

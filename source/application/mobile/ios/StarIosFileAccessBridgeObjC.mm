@@ -4,6 +4,8 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+#include "SDL3/SDL_video.h"
+
 #if __has_include(<UniformTypeIdentifiers/UniformTypeIdentifiers.h>)
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #define STAR_IOS_HAS_UNIFORM_TYPES 1
@@ -18,7 +20,7 @@
 
 @interface StarIosDocumentPickerDelegate : NSObject <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<NSURL*>* pickedUrls;
-@property (nonatomic) dispatch_semaphore_t semaphore;
+@property (nonatomic, strong) dispatch_semaphore_t semaphore;
 @end
 
 @implementation StarIosDocumentPickerDelegate
@@ -50,6 +52,12 @@ namespace {
 
 constexpr NSTimeInterval PickerTimeoutSeconds = 180.0;
 char PickerDelegateAssociationKey;
+SDL_Window* g_sdlWindow = nullptr;
+
+enum class PickerMode {
+  File,
+  Folder
+};
 
 static NSString* toNSString(char const* value) {
   if (!value)
@@ -112,6 +120,13 @@ static bool waitForSemaphore(dispatch_semaphore_t semaphore, NSTimeInterval time
 }
 
 static UIWindow* activeWindow() {
+  if (g_sdlWindow) {
+    SDL_PropertiesID properties = SDL_GetWindowProperties(g_sdlWindow);
+    UIWindow* sdlWindow = (__bridge UIWindow*)SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+    if (sdlWindow)
+      return sdlWindow;
+  }
+
   UIApplication* app = UIApplication.sharedApplication;
   if (!app)
     return nil;
@@ -156,7 +171,7 @@ static UIWindow* activeWindow() {
   id<UIApplicationDelegate> delegate = app.delegate;
   if (delegate && [delegate respondsToSelector:@selector(window)]) {
     @try {
-      UIWindow* window = [delegate valueForKey:@"window"];
+      UIWindow* window = [(id)delegate valueForKey:@"window"];
       if (window)
         return window;
     } @catch (NSException* exception) {
@@ -217,6 +232,39 @@ static NSString* sanitizedFileName(NSString* value, NSString* fallback) {
   NSArray<NSString*>* parts = [name componentsSeparatedByCharactersInSet:invalid];
   NSString* joined = [parts componentsJoinedByString:@"_"];
   return joined.length > 0 ? joined : fallback;
+}
+
+static bool isPakFileName(NSString* name) {
+  return name && [name.lowercaseString hasSuffix:@".pak"];
+}
+
+static NSString* uniqueTargetPath(NSString* parent, NSString* requestedName, bool treatAsDirectory) {
+  NSString* safeName = sanitizedFileName(requestedName, treatAsDirectory ? @"mod_folder" : @"mod.pak");
+  NSString* baseName = safeName;
+  NSString* extension = @"";
+
+  if (!treatAsDirectory) {
+    NSString* ext = safeName.pathExtension;
+    if (ext.length > 0) {
+      extension = [@"." stringByAppendingString:ext];
+      baseName = safeName.stringByDeletingPathExtension;
+    }
+  }
+
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSString* candidate = [parent stringByAppendingPathComponent:safeName];
+  if (![fm fileExistsAtPath:candidate])
+    return candidate;
+
+  for (int i = 2; i < 10000; ++i) {
+    NSString* nextName = [NSString stringWithFormat:@"%@ (%d)%@", baseName, i, extension];
+    candidate = [parent stringByAppendingPathComponent:nextName];
+    if (![fm fileExistsAtPath:candidate])
+      return candidate;
+  }
+
+  NSString* fallback = [NSString stringWithFormat:@"%@_%lld%@", baseName, (long long)[NSDate date].timeIntervalSince1970, extension];
+  return [parent stringByAppendingPathComponent:fallback];
 }
 
 static bool streamCopyUrlToPathAtomic(NSURL* sourceUrl, NSString* targetPath) {
@@ -293,26 +341,8 @@ static bool streamCopyUrlToPathAtomic(NSURL* sourceUrl, NSString* targetPath) {
   return true;
 }
 
-static bool clearDirectoryContents(NSString* directoryPath) {
-  if (!ensureDirectory(directoryPath))
-    return false;
-
-  NSFileManager* fm = NSFileManager.defaultManager;
-  NSError* listError = nil;
-  NSArray<NSString*>* children = [fm contentsOfDirectoryAtPath:directoryPath error:&listError];
-  if (!children)
-    return listError == nil;
-
-  for (NSString* child in children) {
-    NSString* childPath = [directoryPath stringByAppendingPathComponent:child];
-    if (![fm removeItemAtPath:childPath error:nil])
-      return false;
-  }
-  return true;
-}
-
-static bool copyDirectoryUrlContents(NSURL* sourceDirUrl, NSString* targetDirPath, NSMutableArray<NSString*>* importedFiles) {
-  if (!sourceDirUrl || !targetDirPath || !importedFiles)
+static bool copyDirectoryUrlContents(NSURL* sourceDirUrl, NSString* targetDirPath) {
+  if (!sourceDirUrl || !targetDirPath)
     return false;
 
   if (!ensureDirectory(targetDirPath))
@@ -342,14 +372,17 @@ static bool copyDirectoryUrlContents(NSURL* sourceDirUrl, NSString* targetDirPat
     NSString* targetChild = [targetDirPath stringByAppendingPathComponent:childName];
 
     if (isDirectory.boolValue) {
-      if (!copyDirectoryUrlContents(childUrl, targetChild, importedFiles)) {
+      if (!copyDirectoryUrlContents(childUrl, targetChild)) {
         if (startedScopedAccess)
           [sourceDirUrl stopAccessingSecurityScopedResource];
         return false;
       }
     } else {
-      if (streamCopyUrlToPathAtomic(childUrl, targetChild))
-        [importedFiles addObject:targetChild];
+      if (!streamCopyUrlToPathAtomic(childUrl, targetChild)) {
+        if (startedScopedAccess)
+          [sourceDirUrl stopAccessingSecurityScopedResource];
+        return false;
+      }
     }
   }
 
@@ -357,6 +390,48 @@ static bool copyDirectoryUrlContents(NSURL* sourceDirUrl, NSString* targetDirPat
     [sourceDirUrl stopAccessingSecurityScopedResource];
 
   return true;
+}
+
+static void importAllModsFromFolderUrl(NSURL* sourceDirUrl, NSString* targetModsDirectory, NSMutableArray<NSString*>* importedFiles) {
+  if (!sourceDirUrl || !targetModsDirectory || !importedFiles)
+    return;
+
+  BOOL startedScopedAccess = [sourceDirUrl startAccessingSecurityScopedResource];
+
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSError* listError = nil;
+  NSArray<NSURL*>* entries = [fm contentsOfDirectoryAtURL:sourceDirUrl
+                               includingPropertiesForKeys:@[NSURLNameKey, NSURLIsDirectoryKey]
+                                                  options:0
+                                                    error:&listError];
+  if (!entries) {
+    if (startedScopedAccess)
+      [sourceDirUrl stopAccessingSecurityScopedResource];
+    return;
+  }
+
+  for (NSURL* entryUrl in entries) {
+    NSNumber* isDirectory = nil;
+    [entryUrl getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
+
+    NSString* entryName = nil;
+    [entryUrl getResourceValue:&entryName forKey:NSURLNameKey error:nil];
+    if (!entryName || entryName.length == 0)
+      entryName = isDirectory.boolValue ? @"mod_folder" : @"mod_file";
+
+    if (isDirectory.boolValue) {
+      NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, entryName, true);
+      if (ensureDirectory(targetModRoot) && copyDirectoryUrlContents(entryUrl, targetModRoot))
+        [importedFiles addObject:targetModRoot];
+    } else if (isPakFileName(entryName)) {
+      NSString* targetPak = uniqueTargetPath(targetModsDirectory, entryName, false);
+      if (streamCopyUrlToPathAtomic(entryUrl, targetPak))
+        [importedFiles addObject:targetPak];
+    }
+  }
+
+  if (startedScopedAccess)
+    [sourceDirUrl stopAccessingSecurityScopedResource];
 }
 
 static NSString* bundledOpensbPath() {
@@ -438,7 +513,65 @@ static NSString* preferredModsDirectoryPath(NSString* fallbackPath) {
   return base;
 }
 
-static NSArray<NSURL*>* presentOpenPicker(bool folderOnly) {
+static NSString* documentsDirectoryPath() {
+  NSArray<NSString*>* docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+  return docs.firstObject;
+}
+
+static bool copyLocalFileToPathAtomic(NSString* sourcePath, NSString* targetPath) {
+  if (!sourcePath || !targetPath || sourcePath.length == 0 || targetPath.length == 0)
+    return false;
+
+  if ([sourcePath isEqualToString:targetPath])
+    return true;
+
+  NSString* parent = targetPath.stringByDeletingLastPathComponent;
+  if (!ensureDirectory(parent))
+    return false;
+
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSString* tempPath = [targetPath stringByAppendingString:@".tmp"];
+  [fm removeItemAtPath:tempPath error:nil];
+  if (![fm copyItemAtPath:sourcePath toPath:tempPath error:nil]) {
+    [fm removeItemAtPath:tempPath error:nil];
+    return false;
+  }
+
+  if ([fm fileExistsAtPath:targetPath] && ![fm removeItemAtPath:targetPath error:nil]) {
+    [fm removeItemAtPath:tempPath error:nil];
+    return false;
+  }
+
+  if (![fm moveItemAtPath:tempPath toPath:targetPath error:nil]) {
+    [fm removeItemAtPath:tempPath error:nil];
+    return false;
+  }
+
+  return true;
+}
+
+static bool importPackedPakFromDocuments(NSString* destinationPath) {
+  NSString* docs = documentsDirectoryPath();
+  if (!docs || docs.length == 0)
+    return false;
+
+  NSArray<NSString*>* candidates = @[
+    [docs stringByAppendingPathComponent:@"packed.pak"],
+    [docs stringByAppendingPathComponent:@"assets/packed.pak"],
+    [docs stringByAppendingPathComponent:@"Starbound/assets/packed.pak"]
+  ];
+
+  NSFileManager* fm = NSFileManager.defaultManager;
+  for (NSString* candidate in candidates) {
+    BOOL isDirectory = NO;
+    if ([fm fileExistsAtPath:candidate isDirectory:&isDirectory] && !isDirectory)
+      return copyLocalFileToPathAtomic(candidate, destinationPath);
+  }
+
+  return false;
+}
+
+static NSArray<NSURL*>* presentOpenPicker(PickerMode mode) {
   __block UIDocumentPickerViewController* picker = nil;
   __block bool presented = false;
   dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
@@ -454,25 +587,29 @@ static NSArray<NSURL*>* presentOpenPicker(bool folderOnly) {
 
     if (@available(iOS 14.0, *)) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
-      if (folderOnly)
-        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType folder]] asCopy:NO];
+      if (mode == PickerMode::Folder)
+        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
       else
-        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType data]] asCopy:NO];
+        picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeData, UTTypeItem] asCopy:YES];
 #endif
     }
 
     if (!picker) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
-      NSArray<NSString*>* types = folderOnly ? @[@"public.folder"] : @[@"public.data", @"public.item"];
+      NSArray<NSString*>* types = mode == PickerMode::Folder ? @[@"public.folder"] : @[@"public.data", @"public.item"];
 #else
-      NSArray<NSString*>* types = folderOnly ? @[(NSString*)kUTTypeFolder] : @[(NSString*)kUTTypeData, (NSString*)kUTTypeItem];
+      NSArray<NSString*>* types = mode == PickerMode::Folder ? @[(NSString*)kUTTypeFolder] : @[(NSString*)kUTTypeData, (NSString*)kUTTypeItem];
 #endif
-      picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:UIDocumentPickerModeOpen];
+      UIDocumentPickerMode pickerMode = mode == PickerMode::Folder ? UIDocumentPickerModeOpen : UIDocumentPickerModeImport;
+      picker = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:pickerMode];
     }
 
     picker.delegate = delegate;
     picker.allowsMultipleSelection = false;
     picker.modalPresentationStyle = UIModalPresentationFormSheet;
+    picker.popoverPresentationController.sourceView = presenter.view;
+    picker.popoverPresentationController.sourceRect = presenter.view.bounds;
+    picker.popoverPresentationController.permittedArrowDirections = 0;
     objc_setAssociatedObject(picker, &PickerDelegateAssociationKey, delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     [presenter presentViewController:picker animated:YES completion:nil];
     presented = true;
@@ -496,6 +633,10 @@ static NSArray<NSURL*>* presentOpenPicker(bool folderOnly) {
 }
 
 } // namespace
+
+extern "C" void StarIosBridge_setSdlWindow(void* window) {
+  g_sdlWindow = static_cast<SDL_Window*>(window);
+}
 
 extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory) {
   @try {
@@ -527,10 +668,13 @@ extern "C" char* StarIosBridge_pickAndImportPackedPak(char const* targetPath) {
       if (destinationPath.length == 0)
         return nullptr;
 
-      NSArray<NSURL*>* picked = presentOpenPicker(false);
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::File);
       NSURL* selected = picked.firstObject;
-      if (!selected)
+      if (!selected) {
+        if (importPackedPakFromDocuments(destinationPath))
+          return copyCString(destinationPath);
         return nullptr;
+      }
 
       if (!streamCopyUrlToPathAtomic(selected, destinationPath))
         return nullptr;
@@ -558,7 +702,36 @@ extern "C" char* StarIosBridge_resolveModsDirectory(char const* fallbackModsDire
   }
 }
 
-extern "C" char** StarIosBridge_importModFiles(char const* modsDirectory, int* outCount) {
+static char** copyImportedFileArray(NSArray<NSString*>* imported, int* outCount) {
+  int count = (int)imported.count;
+  if (outCount)
+    *outCount = count;
+  if (count <= 0)
+    return nullptr;
+
+  char** out = static_cast<char**>(std::calloc((size_t)count, sizeof(char*)));
+  if (!out) {
+    if (outCount)
+      *outCount = 0;
+    return nullptr;
+  }
+
+  for (int i = 0; i < count; ++i) {
+    out[i] = copyCString(imported[(NSUInteger)i]);
+    if (!out[i]) {
+      for (int j = 0; j <= i; ++j)
+        std::free(out[j]);
+      std::free(out);
+      if (outCount)
+        *outCount = 0;
+      return nullptr;
+    }
+  }
+
+  return out;
+}
+
+extern "C" char** StarIosBridge_importModPakFiles(char const* modsDirectory, int* outCount) {
   @try {
     @autoreleasepool {
       if (outCount)
@@ -570,61 +743,97 @@ extern "C" char** StarIosBridge_importModFiles(char const* modsDirectory, int* o
       if (!ensureDirectory(targetModsDirectory))
         return nullptr;
 
-      NSArray<NSURL*>* picked = presentOpenPicker(true);
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::File);
       NSURL* selected = picked.firstObject;
       if (!selected)
         return nullptr;
 
-      if (!clearDirectoryContents(targetModsDirectory))
-        return nullptr;
-
       NSMutableArray<NSString*>* imported = [NSMutableArray array];
+      NSString* name = selected.lastPathComponent;
+      if (!name || name.length == 0)
+        name = @"mod.pak";
+      if (!isPakFileName(name))
+        name = [name stringByAppendingString:@".pak"];
 
-      NSNumber* isDirectory = nil;
-      [selected getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
-      bool importSuccess = false;
-      if (isDirectory.boolValue) {
-        importSuccess = copyDirectoryUrlContents(selected, targetModsDirectory, imported);
-      } else {
-        NSString* fileName = sanitizedFileName(selected.lastPathComponent, @"mod_file");
-        NSString* target = [targetModsDirectory stringByAppendingPathComponent:fileName];
-        if (streamCopyUrlToPathAtomic(selected, target)) {
-          [imported addObject:target];
-          importSuccess = true;
-        }
-      }
+      NSString* target = uniqueTargetPath(targetModsDirectory, name, false);
+      if (streamCopyUrlToPathAtomic(selected, target))
+        [imported addObject:target];
 
-      if (!importSuccess)
-        return nullptr;
-
-      int count = (int)imported.count;
-      if (outCount)
-        *outCount = count;
-      if (count <= 0)
-        return nullptr;
-
-      char** out = static_cast<char**>(std::calloc((size_t)count, sizeof(char*)));
-      if (!out)
-        return nullptr;
-
-      for (int i = 0; i < count; ++i) {
-        out[i] = copyCString(imported[(NSUInteger)i]);
-        if (!out[i]) {
-          for (int j = 0; j <= i; ++j)
-            std::free(out[j]);
-          std::free(out);
-          if (outCount)
-            *outCount = 0;
-          return nullptr;
-        }
-      }
-
-      return out;
+      return copyImportedFileArray(imported, outCount);
     }
   } @catch (NSException* exception) {
     if (outCount)
       *outCount = 0;
-    NSLog(@"[OpenStarbound][iOSBridge] importModFiles exception: %@ (%@)", exception.name, exception.reason);
+    NSLog(@"[OpenStarbound][iOSBridge] importModPakFiles exception: %@ (%@)", exception.name, exception.reason);
+    return nullptr;
+  }
+}
+
+extern "C" char** StarIosBridge_importSingleModFolder(char const* modsDirectory, int* outCount) {
+  @try {
+    @autoreleasepool {
+      if (outCount)
+        *outCount = 0;
+
+      NSString* targetModsDirectory = toNSString(modsDirectory);
+      if (targetModsDirectory.length == 0)
+        return nullptr;
+      if (!ensureDirectory(targetModsDirectory))
+        return nullptr;
+
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::Folder);
+      NSURL* selected = picked.firstObject;
+      if (!selected)
+        return nullptr;
+
+      NSString* rootName = selected.lastPathComponent;
+      if (!rootName || rootName.length == 0)
+        rootName = @"mod_folder";
+
+      NSString* targetModRoot = uniqueTargetPath(targetModsDirectory, rootName, true);
+      if (!ensureDirectory(targetModRoot))
+        return nullptr;
+
+      NSMutableArray<NSString*>* imported = [NSMutableArray array];
+      if (copyDirectoryUrlContents(selected, targetModRoot))
+        [imported addObject:targetModRoot];
+
+      return copyImportedFileArray(imported, outCount);
+    }
+  } @catch (NSException* exception) {
+    if (outCount)
+      *outCount = 0;
+    NSLog(@"[OpenStarbound][iOSBridge] importSingleModFolder exception: %@ (%@)", exception.name, exception.reason);
+    return nullptr;
+  }
+}
+
+extern "C" char** StarIosBridge_importModsDirectory(char const* modsDirectory, int* outCount) {
+  @try {
+    @autoreleasepool {
+      if (outCount)
+        *outCount = 0;
+
+      NSString* targetModsDirectory = toNSString(modsDirectory);
+      if (targetModsDirectory.length == 0)
+        return nullptr;
+      if (!ensureDirectory(targetModsDirectory))
+        return nullptr;
+
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::Folder);
+      NSURL* selected = picked.firstObject;
+      if (!selected)
+        return nullptr;
+
+      NSMutableArray<NSString*>* imported = [NSMutableArray array];
+      importAllModsFromFolderUrl(selected, targetModsDirectory, imported);
+
+      return copyImportedFileArray(imported, outCount);
+    }
+  } @catch (NSException* exception) {
+    if (outCount)
+      *outCount = 0;
+    NSLog(@"[OpenStarbound][iOSBridge] importModsDirectory exception: %@ (%@)", exception.name, exception.reason);
     return nullptr;
   }
 }
@@ -647,7 +856,7 @@ extern "C" bool StarIosBridge_openModsDirectory(char const* modsDirectory) {
         NSURL* modsUrl = [NSURL fileURLWithPath:resolved isDirectory:YES];
         if (@available(iOS 14.0, *)) {
 #if STAR_IOS_HAS_UNIFORM_TYPES
-          UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[[UTType folder]] asCopy:NO];
+          UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
           picker.directoryURL = modsUrl;
           picker.allowsMultipleSelection = false;
           picker.modalPresentationStyle = UIModalPresentationFormSheet;

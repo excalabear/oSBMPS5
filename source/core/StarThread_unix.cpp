@@ -65,7 +65,15 @@ struct ThreadImpl {
 
     stopped = false;
     joined = false;
+#if defined(STAR_SYSTEM_IOS)
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    int ret = pthread_create(&pthread, &attr, &runThread, (void*)this);
+    pthread_attr_destroy(&attr);
+#else
     int ret = pthread_create(&pthread, NULL, &runThread, (void*)this);
+#endif
     if (ret != 0) {
       stopped = true;
       joined = true;

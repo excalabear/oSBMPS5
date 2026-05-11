@@ -35,9 +35,20 @@
 #include "imgui.h"
 #include "imgui_freetype.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
 #if defined(STAR_SYSTEM_ANDROID)
 #include <android/log.h>
 #define STAR_ANDROID_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "OpenStarbound", __VA_ARGS__)
+#elif defined(STAR_SYSTEM_IOS)
+#define STAR_ANDROID_LOGI(...) do { \
+  std::fprintf(stderr, "[OpenStarbound] "); \
+  std::fprintf(stderr, __VA_ARGS__); \
+  std::fprintf(stderr, "\n"); \
+  std::fflush(stderr); \
+} while (false)
 #else
 #define STAR_ANDROID_LOGI(...)
 #endif
@@ -49,6 +60,8 @@ extern "C" __declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 1;
 #endif // graphics driver is told by these exports to default to the dedicated GPU
 
 namespace Star {
+
+void setMobileStartupStatus(String const& status);
 
 Json const AdditionalAssetsSettings = Json::parseJson(R"JSON(
     {
@@ -197,12 +210,15 @@ Json const AdditionalDefaultConfiguration = Json::parseJson(R"JSON(
   )JSON");
 
 void ClientApplication::startup(StringList const& cmdLineArgs) {
+  setMobileStartupStatus("Parsing mobile boot configuration...");
   RootLoader rootLoader({AdditionalAssetsSettings, AdditionalDefaultConfiguration, String("starbound.log"), LogLevel::Info, false, String("starbound.config")});
   m_root = rootLoader.initOrDie(cmdLineArgs).first;
 
-#if STAR_SYSTEM_ANDROID
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+  setMobileStartupStatus("Opening asset index...");
   STAR_ANDROID_LOGI("startup: preloading assets/config begin");
   auto assets = m_root->assets();
+  setMobileStartupStatus("Loading interface scale configuration...");
   STAR_ANDROID_LOGI("startup: assets handle ready");
   m_minInterfaceScale = assets->json("/interface.config:minInterfaceScale").toFloat();
   STAR_ANDROID_LOGI("startup: minInterfaceScale ready");
@@ -210,6 +226,7 @@ void ClientApplication::startup(StringList const& cmdLineArgs) {
   STAR_ANDROID_LOGI("startup: maxInterfaceScale ready");
   m_crossoverRes = jsonToVec2F(assets->json("/interface.config:interfaceCrossoverRes"));
   STAR_ANDROID_LOGI("startup: crossoverRes ready");
+  setMobileStartupStatus("Loading client configuration...");
   m_windowTitle = assets->json("/client.config:windowTitle").toString();
   STAR_ANDROID_LOGI("startup: windowTitle ready");
   m_maxFrameSkipSetting = assets->json("/client.config:maxFrameSkip").toUInt();
@@ -217,6 +234,7 @@ void ClientApplication::startup(StringList const& cmdLineArgs) {
   m_updateTrackWindowSetting = assets->json("/client.config:updateTrackWindow").toFloat();
   STAR_ANDROID_LOGI("startup: updateTrackWindow ready");
   m_assetsBootstrapReady = true;
+  setMobileStartupStatus("Finished loading assets and configuration...");
   STAR_ANDROID_LOGI("startup: preloading assets/config done");
 #endif
 
@@ -305,7 +323,7 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
   STAR_ANDROID_LOGI("applicationInit: create Input");
   m_input = make_shared<Input>();
   STAR_ANDROID_LOGI("applicationInit: create Input done");
-#if !STAR_SYSTEM_ANDROID
+#if !STAR_SYSTEM_ANDROID && !STAR_SYSTEM_IOS
   STAR_ANDROID_LOGI("applicationInit: create Voice");
   m_voice = make_shared<Voice>(appController);
 #else
@@ -313,7 +331,7 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
 #endif
 
   STAR_ANDROID_LOGI("applicationInit: read assets + load font");
-#if STAR_SYSTEM_ANDROID
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
   if (m_assetsBootstrapReady) {
     STAR_ANDROID_LOGI("applicationInit: apply preloaded settings");
     appController->setApplicationTitle(m_windowTitle);
@@ -359,29 +377,42 @@ void ClientApplication::applicationInit(ApplicationControllerPtr appController) 
 }
 
 void ClientApplication::renderInit(RendererPtr renderer) {
+  setMobileStartupStatus("Renderer: binding application renderer...");
   Application::renderInit(renderer);
   if (!m_worldPainter) {
+    setMobileStartupStatus("Renderer: preparing world painter...");
     STAR_ANDROID_LOGI("renderInit: create WorldPainter");
     m_worldPainter = make_shared<WorldPainter>();
     STAR_ANDROID_LOGI("renderInit: create WorldPainter done");
   }
+  setMobileStartupStatus("Renderer: loading effects and framebuffers...");
   renderReload();
   m_root->registerReloadListener(m_reloadListener = make_shared<CallbackListener>([this]() { renderReload(); }));
 
+  setMobileStartupStatus("Renderer: applying mobile render settings...");
   if (m_root->configuration()->get("limitTextureAtlasSize").optBool().value(false))
     renderer->setSizeLimitEnabled(true);
 
   renderer->setMultiTexturingEnabled(m_root->configuration()->get("useMultiTexturing").optBool().value(true));
 
+  setMobileStartupStatus("Renderer: preparing interface textures...");
   m_guiContext->renderInit(renderer);
 
+  setMobileStartupStatus("Renderer: preparing startup overlays...");
   m_cinematicOverlay = make_shared<Cinematic>();
   m_errorScreen = make_shared<ErrorScreen>();
 
   if (m_titleScreen)
     m_titleScreen->renderInit(renderer);
+#if STAR_SYSTEM_IOS
+  // The world renderer is not used until gameplay. Deferring this on iOS keeps
+  // the launch path out of several large GLES texture-group allocations while
+  // preserving the later initialization path used before entering a world.
+  setMobileStartupStatus("Renderer: deferred world rendering until gameplay...");
+#else
   if (m_worldPainter)
     m_worldPainter->renderInit(renderer);
+#endif
 
   #ifdef STAR_ENABLE_STEAM_INTEGRATION
   #ifdef STAR_SYSTEM_LINUX
@@ -397,6 +428,7 @@ void ClientApplication::renderInit(RendererPtr renderer) {
   #endif
   #endif
 
+  setMobileStartupStatus("Renderer: entering startup flow...");
   changeState(MainAppState::Mods);
 }
 
@@ -552,10 +584,18 @@ void ClientApplication::render() {
 
   if (auto interfaceScale = config->get("interfaceScale").optFloat().value(); interfaceScale != 0)
     m_guiContext->setInterfaceScale(interfaceScale);
+#if STAR_SYSTEM_IOS
+  else {
+    float displayScale = std::max(1.0f, std::round(m_guiContext->getDisplayScale()));
+    float logicalShortSide = std::min(m_guiContext->windowWidth(), m_guiContext->windowHeight()) / displayScale;
+    m_guiContext->setInterfaceScale(std::clamp(logicalShortSide / 720.0f, 0.75f, 1.25f));
+  }
+#else
   else if (m_guiContext->windowWidth() >= m_crossoverRes[0] && m_guiContext->windowHeight() >= m_crossoverRes[1])
     m_guiContext->setInterfaceScale(m_maxInterfaceScale);
   else
     m_guiContext->setInterfaceScale(m_minInterfaceScale);
+#endif
 
   if (m_state == MainAppState::Mods || m_state == MainAppState::Splash) {
     m_cinematicOverlay->render();
@@ -635,6 +675,7 @@ void ClientApplication::renderReload() {
   auto renderer = Application::renderer();
 
   auto loadEffectConfig = [&](String const& name) {
+    setMobileStartupStatus(strf("Renderer: loading {} effect...", name));
     String path = strf("/rendering/effects/{}.config", name);
     if (assets->assetExists(path)) {
       StringMap<String> shaders;
@@ -656,6 +697,7 @@ void ClientApplication::renderReload() {
       Logger::warn("No rendering config found for renderer with id '{}'", renderer->rendererId());
   };
 
+  setMobileStartupStatus("Renderer: loading framebuffer configuration...");
   renderer->loadConfig(assets->json("/rendering/opengl.config"));
   
   loadEffectConfig("world");

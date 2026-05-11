@@ -22,14 +22,47 @@
 #include "StarImageLuaBindings.hpp"
 #include "StarUtilityLuaBindings.hpp"
 
+#include <cstdio>
+#include <mutex>
+
 #if defined(STAR_SYSTEM_ANDROID)
 #include <android/log.h>
 #define STAR_ASSETS_ANDROID_LOGI(...) __android_log_print(ANDROID_LOG_INFO, "OpenStarbound", __VA_ARGS__)
+#elif defined(STAR_SYSTEM_IOS)
+#define STAR_ASSETS_ANDROID_LOGI(...) do { \
+  std::fprintf(stderr, "[OpenStarbound] "); \
+  std::fprintf(stderr, __VA_ARGS__); \
+  std::fprintf(stderr, "\n"); \
+  std::fflush(stderr); \
+} while (false)
 #else
 #define STAR_ASSETS_ANDROID_LOGI(...)
 #endif
 
 namespace Star {
+
+namespace {
+  std::mutex MobileStartupStatusMutex;
+  String MobileStartupStatus;
+}
+
+void setMobileStartupStatus(String const& status) {
+#if STAR_PLATFORM_MOBILE
+  std::lock_guard<std::mutex> lock(MobileStartupStatusMutex);
+  MobileStartupStatus = status;
+#else
+  (void)status;
+#endif
+}
+
+String getMobileStartupStatus() {
+#if STAR_PLATFORM_MOBILE
+  std::lock_guard<std::mutex> lock(MobileStartupStatusMutex);
+  return MobileStartupStatus;
+#else
+  return {};
+#endif
+}
 
 // if a ptr is returned, can be optionally used to format an error
 static const char* validateBasePath(std::string_view const& basePath) {
@@ -155,8 +188,10 @@ Assets::Assets(Settings settings, StringList assetSources) {
   m_settings = std::move(settings);
   m_stopThreads = false;
   m_assetSources = std::move(assetSources);
+  setMobileStartupStatus(strf("Preparing asset manager ({} source(s))...", m_assetSources.size()));
 
   auto luaEngine = LuaEngine::create();
+  setMobileStartupStatus("Preparing asset script engine...");
   m_luaEngine = luaEngine;
   auto pushGlobalContext = [&luaEngine](String const& name, LuaCallbacks && callbacks) {
     auto table = luaEngine->createTable();
@@ -381,6 +416,7 @@ Assets::Assets(Settings settings, StringList assetSources) {
 
   for (auto& sourcePath : m_assetSources) {
     Logger::info("Loading assets from: '{}'", sourcePath);
+    setMobileStartupStatus(strf("Loading asset source: {}", File::baseName(sourcePath)));
     AssetSourcePtr source;
     if (File::isDirectory(sourcePath))
       source = std::make_shared<DirectoryAssetSource>(sourcePath, m_settings.pathIgnore);
@@ -392,10 +428,14 @@ Assets::Assets(Settings settings, StringList assetSources) {
 
     runLoadScripts("onLoad", sourcePath, source);
   }
+  setMobileStartupStatus("Finished scanning asset sources...");
   STAR_ASSETS_ANDROID_LOGI("Assets: source scan complete (%zu sources)", (size_t)m_assetSources.size());
 
-  for (auto& pair : sources)
+  for (auto& pair : sources) {
+    setMobileStartupStatus(strf("Running asset post-load scripts: {}", File::baseName(pair.first)));
     runLoadScripts("postLoad", pair.first, pair.second);
+  }
+  setMobileStartupStatus("Finished asset post-load scripts...");
   STAR_ASSETS_ANDROID_LOGI("Assets: postLoad scripts complete");
 
   if (!m_settings.skipDigest) {
@@ -425,12 +465,14 @@ Assets::Assets(Settings settings, StringList assetSources) {
     STAR_ASSETS_ANDROID_LOGI("Assets: digest complete");
   } else {
     m_digest = {};
+    setMobileStartupStatus("Skipped asset digest...");
     STAR_ASSETS_ANDROID_LOGI("Assets: digest skipped");
   }
 
   int workerPoolSize = m_settings.workerPoolSize;
   for (int i = 0; i < workerPoolSize; i++)
     m_workerThreads.append(Thread::invoke("Assets::workerMain", mem_fn(&Assets::workerMain), this));
+  setMobileStartupStatus(strf("Asset worker pool ready ({} thread(s))...", workerPoolSize));
   STAR_ASSETS_ANDROID_LOGI("Assets: worker pool ready (%d)", workerPoolSize);
 
   if (!m_settings.skipPreload) {
@@ -449,6 +491,7 @@ Assets::Assets(Settings settings, StringList assetSources) {
     }
     STAR_ASSETS_ANDROID_LOGI("Assets: preload complete");
   } else {
+    setMobileStartupStatus("Skipped asset preload...");
     STAR_ASSETS_ANDROID_LOGI("Assets: preload skipped");
   }
 }
