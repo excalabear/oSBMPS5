@@ -26,6 +26,17 @@ IF (STAR_SYSTEM_WINDOWS)
     )
 ENDIF ()
 
+IF (STAR_SYSTEM_IOS)
+  SET(STAR_IOS_ASSET_CATALOG "${CMAKE_CURRENT_SOURCE_DIR}/ios/Assets.xcassets")
+  SET_SOURCE_FILES_PROPERTIES("${STAR_IOS_ASSET_CATALOG}" PROPERTIES
+    MACOSX_PACKAGE_LOCATION Resources
+  )
+  SET(star_client_RESOURCES
+      ${star_client_RESOURCES}
+      "${STAR_IOS_ASSET_CATALOG}"
+    )
+ENDIF ()
+
 IF (STAR_SYSTEM_ANDROID)
   ADD_LIBRARY (starbound SHARED
     $<TARGET_OBJECTS:star_extern> $<TARGET_OBJECTS:star_core> $<TARGET_OBJECTS:star_base> $<TARGET_OBJECTS:star_game>
@@ -88,8 +99,20 @@ ENDIF ()
 
 IF (STAR_SYSTEM_IOS)
   SET_TARGET_PROPERTIES(starbound PROPERTIES
-    MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.openstarbound.ios"
+    OUTPUT_NAME "OpenStarbound"
+    MACOSX_BUNDLE_BUNDLE_NAME "OpenStarbound"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.devoflife.osbm.ios"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
+    MACOSX_BUNDLE_BUNDLE_VERSION "1"
+    XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.devoflife.osbm.ios"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+    XCODE_ATTRIBUTE_PRODUCT_NAME "OpenStarbound"
+    XCODE_ATTRIBUTE_MARKETING_VERSION "1.0"
+    XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "1"
+    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleName "OpenStarbound"
+    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleShortVersionString "1.0"
+    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleVersion "1"
     XCODE_ATTRIBUTE_INFOPLIST_KEY_UIFileSharingEnabled "YES"
     XCODE_ATTRIBUTE_INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace "YES"
     XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleDisplayName "OpenStarbound"
@@ -101,7 +124,48 @@ IF (STAR_SYSTEM_IOS)
   ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_BUNDLE_ASSETS_DEST}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${STAR_IOS_BUNDLE_ASSETS_SOURCE}" "${STAR_IOS_BUNDLE_ASSETS_DEST}"
+    COMMAND /usr/bin/plutil -replace CFBundleDisplayName -string OpenStarbound "$<TARGET_FILE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleName -string OpenStarbound "$<TARGET_FILE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleIdentifier -string com.devoflife.osbm.ios "$<TARGET_FILE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleShortVersionString -string 1.0 "$<TARGET_FILE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleVersion -string 1 "$<TARGET_FILE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace UIFileSharingEnabled -bool YES "$<TARGET_FILE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES "$<TARGET_FILE_DIR:starbound>/Info.plist"
     COMMENT "Copying OpenStarbound bundled assets into iOS app bundle"
+    VERBATIM
+  )
+
+  # IPA packaging
+  # Only the 'ipa' target writes Payload contents. It always recreates Payload
+  # from the current app bundle so stale app bundles or binaries cannot survive
+  # from previous packaging runs.
+  SET(STAR_IOS_IPA_DIR      "${CMAKE_BINARY_DIR}/ipa")
+  SET(STAR_IOS_IPA_PAYLOAD_DIR "${STAR_IOS_IPA_DIR}/Payload")
+  SET(STAR_IOS_IPA_PAYLOAD  "${STAR_IOS_IPA_PAYLOAD_DIR}/OpenStarbound.app")
+  SET(STAR_IOS_IPA_FILE     "${STAR_IOS_IPA_DIR}/OpenStarbound-iOS-Release-unsigned.ipa")
+
+  # 'ipa' target: rebuilds a fresh unsigned .ipa from the current app bundle.
+  # Depends on 'starbound' so the binary is always up to date before packaging.
+  # Usage: cmake --build <build-dir> --config Release --target ipa
+  ADD_CUSTOM_TARGET(ipa
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_IPA_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf         "${STAR_IOS_IPA_PAYLOAD_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E rm -f          "${STAR_IOS_IPA_FILE}"
+    COMMAND /usr/bin/plutil -replace CFBundleDisplayName -string OpenStarbound "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleName -string OpenStarbound "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleIdentifier -string com.devoflife.osbm.ios "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleShortVersionString -string 1.0 "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace CFBundleVersion -string 1 "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace UIFileSharingEnabled -bool YES "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND /usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_IPA_PAYLOAD_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "$<TARGET_BUNDLE_DIR:starbound>"
+      "${STAR_IOS_IPA_PAYLOAD}"
+    COMMAND zip -qry "${STAR_IOS_IPA_FILE}" "Payload"
+    DEPENDS starbound
+    WORKING_DIRECTORY "${STAR_IOS_IPA_DIR}"
+    COMMENT "Packaging unsigned IPA: ipa/OpenStarbound-iOS-Release-unsigned.ipa"
     VERBATIM
   )
 ENDIF ()

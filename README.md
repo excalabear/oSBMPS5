@@ -191,23 +191,23 @@ cmake -S source -B build/ios-arm64-ipa \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED=NO \
   -DCMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_IDENTITY=""
-
-cmake --build build/ios-arm64-ipa --config Release --parallel --target starbound
 ```
 
-Package unsigned `.ipa`:
+Build and package the unsigned `.ipa` in one step using the `ipa` CMake target:
 
 ```bash
-APP_PATH="$(find build/ios-arm64-ipa dist -type d -name '*.app' | head -n 1)"
-IPA_DIR="build/ios-arm64-ipa/ipa"
-rm -rf "$IPA_DIR"
-mkdir -p "$IPA_DIR/Payload"
-cp -R "$APP_PATH" "$IPA_DIR/Payload/$(basename "$APP_PATH")"
-(
-  cd "$IPA_DIR"
-  zip -qry "OpenStarbound-iOS-Release-unsigned.ipa" Payload
-)
+cmake --build build/ios-arm64-ipa --config Release --parallel --target ipa
 ```
+
+The `ipa` target:
+1. Builds `starbound` (and all dependencies) if out of date
+2. Deletes any previous `ipa/Payload/` directory and unsigned `.ipa`
+3. Copies the full current app bundle (binary + assets + Info.plist) into `ipa/Payload/OpenStarbound.app/`
+4. Zips the result into the final `.ipa`
+
+Do not package a manually staged `Payload` directory. Re-run the `ipa` target
+whenever you need a fresh installable build; it is the only step that writes the
+final IPA payload.
 
 Resulting file:
 * `build/ios-arm64-ipa/ipa/OpenStarbound-iOS-Release-unsigned.ipa`

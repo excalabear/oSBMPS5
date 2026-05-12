@@ -7,7 +7,7 @@
 
   <application
       android:allowBackup="true"
-      android:label="OpenStarbound Mobile"
+      android:label="OpenStarbound"
       android:icon="@mipmap/ic_launcher"
       android:roundIcon="@mipmap/ic_launcher_round"
       android:hardwareAccelerated="true"
