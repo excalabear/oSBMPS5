@@ -342,6 +342,7 @@ void OpenGlRenderer::loadConfig(Json const& config) {
   }
   setScreenSize(m_screenSize);
   m_config = config;
+  glBindFramebuffer(GL_FRAMEBUFFER, m_screenFbo);
 }
 
 void OpenGlRenderer::loadEffectConfig(String const& name, Json const& effectConfig, StringMap<String> const& shaders) {
@@ -624,7 +625,7 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
     effectScreenSize = m_screenSize / (buf->sizeDiv);
   } else {
     m_currentFrameBuffer.reset();
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
   }
 
   glUseProgram(m_program = effect.program);
@@ -774,7 +775,7 @@ void OpenGlRenderer::startFrame() {
     frameBuffer.second->blitted = false;
   }
 
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_FRAMEBUFFER, m_screenFbo);
 
   glClear(GL_COLOR_BUFFER_BIT);
 
@@ -801,7 +802,7 @@ void OpenGlRenderer::finishFrame() {
       });
 
   // Blit if another shader hasn't
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_FRAMEBUFFER, m_screenFbo);
 
   if (DebugEnabled)
     logGlErrorSummary("OpenGL errors this frame");
@@ -1305,7 +1306,7 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
     return;
 
   auto& size = m_screenSize;
-  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, frameBuffer->id);
   glBlitFramebuffer(
     0, 0, size[0], size[1],

@@ -118,6 +118,11 @@ public:
 
   void setScreenSize(Vec2U screenSize);
 
+  // On iOS EAGL, FBO 0 is not the screen; SDL creates a custom FBO. Store it
+  // here so startFrame/finishFrame/blit all render to the right target.
+  void setScreenFramebuffer(GLuint fbo) { m_screenFbo = fbo; }
+  GLuint screenFramebuffer() const { return m_screenFbo; }
+
   void startFrame();
   void finishFrame();
 
@@ -293,6 +298,7 @@ private:
   void switchGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer);
 
   Vec2U m_screenSize;
+  GLuint m_screenFbo = 0;
 
   GLuint m_program = 0;
 

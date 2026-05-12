@@ -188,8 +188,8 @@ struct LauncherState {
 
 class MobileTouchInputAdapter {
 public:
-  explicit MobileTouchInputAdapter(Vec2U* windowSize)
-    : m_windowSize(windowSize) {}
+  explicit MobileTouchInputAdapter(Vec2U* windowSize, float* displayScale = nullptr)
+    : m_windowSize(windowSize), m_displayScalePtr(displayScale) {}
 
   void setConfig(MobileTouchConfig config) {
     m_config = config;
@@ -240,18 +240,25 @@ public:
     float radius = controlRadius();
     updateButtonCenters(radius);
 
+    // ImGui operates in logical pixels. On HiDPI displays (iOS Retina) the
+    // window size is in physical pixels, so divide by the pixel scale before
+    // handing any position or radius to the ImGui draw list.
+    float ps = drawPixelScale();
+    float dr = radius / ps;
+    auto ip = [ps](Vec2F const& v) { return ImVec2(v[0] / ps, v[1] / ps); };
+
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     ImU32 base = IM_COL32(255, 255, 255, (int)(180.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
     ImU32 fill = IM_COL32(80, 160, 255, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
 
     if (m_joystickActive) {
-      draw->AddCircle(ImVec2(m_joystickOrigin[0], m_joystickOrigin[1]), radius, base, 48, 3.0f);
-      draw->AddCircleFilled(ImVec2(m_joystickCurrent[0], m_joystickCurrent[1]), radius * 0.45f, fill, 32);
+      draw->AddCircle(ip(m_joystickOrigin), dr, base, 48, 3.0f);
+      draw->AddCircleFilled(ip(m_joystickCurrent), dr * 0.45f, fill, 32);
     }
 
-    drawButton(draw, m_jumpButtonCenter, radius * 0.55f, m_jumpHeld, "J", base, fill);
-    drawButton(draw, m_interactButtonCenter, radius * 0.50f, m_interactHeld, "E", base, fill);
-    drawButton(draw, m_pauseButtonCenter, radius * 0.52f, m_pauseHeld, "ESC", base, fill);
+    drawButton(draw, ip(m_jumpButtonCenter), dr * 0.55f, m_jumpHeld, "J", base, fill);
+    drawButton(draw, ip(m_interactButtonCenter), dr * 0.50f, m_interactHeld, "E", base, fill);
+    drawButton(draw, ip(m_pauseButtonCenter), dr * 0.52f, m_pauseHeld, "ESC", base, fill);
   }
 
   bool overlayEnabled() const {
@@ -280,6 +287,15 @@ private:
 
   static bool insideCircle(Vec2F const& p, Vec2F const& center, float radius) {
     return (p - center).magnitudeSquared() <= radius * radius;
+  }
+
+  // Returns the scale factor between physical pixels (m_windowSize) and the
+  // logical pixels that ImGui's draw list expects. On standard-density displays
+  // (Android, desktop) this is 1.0; on Retina iOS devices it is typically 2 or 3.
+  float drawPixelScale() const {
+    if (!m_displayScalePtr)
+      return 1.0f;
+    return std::max(1.0f, std::round(*m_displayScalePtr));
   }
 
   float controlRadius() const {
@@ -566,14 +582,15 @@ private:
     m_generatedEvents.append(event);
   }
 
-  static void drawButton(ImDrawList* draw, Vec2F const& center, float radius, bool held, char const* label, ImU32 base, ImU32 fill) {
-    draw->AddCircle(ImVec2(center[0], center[1]), radius, base, 48, 3.0f);
+  static void drawButton(ImDrawList* draw, ImVec2 center, float radius, bool held, char const* label, ImU32 base, ImU32 fill) {
+    draw->AddCircle(center, radius, base, 48, 3.0f);
     if (held)
-      draw->AddCircleFilled(ImVec2(center[0], center[1]), radius, fill, 32);
-    draw->AddText(ImVec2(center[0] - radius * 0.2f, center[1] - radius * 0.35f), base, label);
+      draw->AddCircleFilled(center, radius, fill, 32);
+    draw->AddText(ImVec2(center.x - radius * 0.2f, center.y - radius * 0.35f), base, label);
   }
 
   Vec2U* m_windowSize;
+  float* m_displayScalePtr = nullptr;
   MobileTouchConfig m_config;
   List<InputEvent> m_generatedEvents;
 
@@ -1027,6 +1044,19 @@ private:
     m_vsync = false;
 
     m_renderer = make_shared<GlesRenderer>();
+
+#ifdef STAR_SYSTEM_IOS
+    // iOS EAGL binds a non-zero viewFramebuffer after context creation.
+    // FBO 0 is the null framebuffer on iOS, not the screen. Save the real
+    // screen FBO so the renderer and startup UI can target it correctly.
+    {
+      GLint iosFbo = 0;
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &iosFbo);
+      m_renderer->setScreenFramebuffer(static_cast<GLuint>(iosFbo));
+      androidLogInfo("setupWindowAndRenderer: iOS screen FBO = %d", iosFbo);
+    }
+#endif
+
     syncWindowMetrics(false);
     m_renderer->setScreenSize(m_windowSize);
   }
@@ -1372,6 +1402,9 @@ private:
     ImGui::End();
 
     ImGui::Render();
+#ifdef STAR_SYSTEM_IOS
+    glBindFramebuffer(GL_FRAMEBUFFER, m_renderer->screenFramebuffer());
+#endif
     glViewport(0, 0, (int)m_windowSize[0], (int)m_windowSize[1]);
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -1560,16 +1593,13 @@ private:
       setMobileStartupStatus("Initializing renderer...");
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: renderInit");
-#ifdef STAR_SYSTEM_IOS
-      SDL_GL_MakeCurrent(m_window, m_glContext);
-#endif
       m_application->renderInit(m_renderer);
       setMobileStartupStatus("Renderer initialized...");
       renderStartupScreen(getMobileStartupStatus());
       setMobileStartupStatus("Initializing touch controls...");
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
-      m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize);
+      m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_displayScale);
 
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
@@ -1622,6 +1652,9 @@ private:
     ImGui::End();
 
     ImGui::Render();
+#ifdef STAR_SYSTEM_IOS
+    glBindFramebuffer(GL_FRAMEBUFFER, m_renderer->screenFramebuffer());
+#endif
     glViewport(0, 0, (int)m_windowSize[0], (int)m_windowSize[1]);
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -1635,6 +1668,7 @@ private:
 
     while (!m_quitRequested && !m_softQuitRequested) {
 #ifdef STAR_SYSTEM_IOS
+      SDL_PumpEvents();
       SDL_GL_MakeCurrent(m_window, m_glContext);
 #endif
       syncWindowMetrics(true);
