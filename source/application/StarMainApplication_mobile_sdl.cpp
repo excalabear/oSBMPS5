@@ -259,6 +259,7 @@ public:
     drawButton(draw, ip(m_jumpButtonCenter), dr * 0.55f, m_jumpHeld, "J", base, fill);
     drawButton(draw, ip(m_interactButtonCenter), dr * 0.50f, m_interactHeld, "E", base, fill);
     drawButton(draw, ip(m_pauseButtonCenter), dr * 0.52f, m_pauseHeld, "ESC", base, fill);
+    drawButton(draw, ip(m_chatButtonCenter), dr * 0.38f, m_chatHeld, "T", base, fill);
   }
 
   bool overlayEnabled() const {
@@ -274,7 +275,8 @@ private:
     SecondaryHold,
     JumpButton,
     InteractButton,
-    PauseButton
+    PauseButton,
+    ChatButton
   };
 
   struct FingerState {
@@ -366,6 +368,9 @@ private:
     } else if (insideCircle(pos, m_interactButtonCenter, radius * 0.65f)) {
       state.role = FingerRole::InteractButton;
       m_interactHeld = true;
+    } else if (insideCircle(pos, m_chatButtonCenter, radius * 0.52f)) {
+      state.role = FingerRole::ChatButton;
+      m_chatHeld = true;
     } else if (pos[0] < w * 0.35f && pos[1] > h * 0.60f && !m_joystickActive) {
       state.role = FingerRole::Joystick;
       m_joystickActive = true;
@@ -492,6 +497,9 @@ private:
       case FingerRole::PauseButton:
         m_pauseHeld = false;
         break;
+      case FingerRole::ChatButton:
+        m_chatHeld = false;
+        break;
       default:
         break;
     }
@@ -507,6 +515,7 @@ private:
     m_jumpButtonCenter = Vec2F(w - pad * 1.2f, h - pad * 1.4f);
     m_interactButtonCenter = Vec2F(w - pad * 2.7f, h - pad * 1.8f);
     m_pauseButtonCenter = Vec2F(pad * 1.35f, pad * 1.15f);
+    m_chatButtonCenter = Vec2F(w - pad * 1.9f, h - pad * 0.6f);
   }
 
   void emitActionEdges() {
@@ -517,6 +526,7 @@ private:
     setActionKey(m_jumpHeld, Key::Space, m_jumpKeyHeld);
     setActionKey(m_interactHeld, Key::E, m_interactKeyHeld);
     setActionKey(m_pauseHeld, Key::Escape, m_pauseKeyHeld);
+    setActionKey(m_chatHeld, Key::Return, m_chatKeyHeld);
 
     if (m_primaryHeld && !m_primaryMouseHeld && !m_secondaryMouseHeld) {
       m_primaryMouseHeld = true;
@@ -546,6 +556,7 @@ private:
     setActionKey(false, Key::Space, m_jumpKeyHeld);
     setActionKey(false, Key::E, m_interactKeyHeld);
     setActionKey(false, Key::Escape, m_pauseKeyHeld);
+    setActionKey(false, Key::Return, m_chatKeyHeld);
 
     if (m_primaryMouseHeld) {
       m_primaryMouseHeld = false;
@@ -606,6 +617,7 @@ private:
   Vec2F m_jumpButtonCenter;
   Vec2F m_interactButtonCenter;
   Vec2F m_pauseButtonCenter;
+  Vec2F m_chatButtonCenter;
 
   bool m_primaryHeld = false;
   bool m_primaryMouseHeld = false;
@@ -620,6 +632,7 @@ private:
   bool m_jumpHeld = false;
   bool m_interactHeld = false;
   bool m_pauseHeld = false;
+  bool m_chatHeld = false;
 
   bool m_rightHeld = false;
   bool m_leftHeld = false;
@@ -628,6 +641,7 @@ private:
   bool m_jumpKeyHeld = false;
   bool m_interactKeyHeld = false;
   bool m_pauseKeyHeld = false;
+  bool m_chatKeyHeld = false;
 };
 
 class MobilePlatform {
@@ -662,59 +676,67 @@ public:
     if (m_quitRequested)
       return 0;
 
+    // Outer loop: allows the user to return to the launcher after a game
+    // session and relaunch without restarting the process.
     while (!m_quitRequested) {
-      if (!prepareBootConfig(launcher, launcher.lastError)) {
-        if (launcher.lastError.empty())
-          launcher.lastError = "Failed to prepare runtime boot configuration.";
-        launcher.lastStatus = "Launch failed. Check imported files and storage permissions.";
+      // Inner loop: show launcher on startup/config failures; break on success.
+      while (!m_quitRequested) {
+        if (!prepareBootConfig(launcher, launcher.lastError)) {
+          if (launcher.lastError.empty())
+            launcher.lastError = "Failed to prepare runtime boot configuration.";
+          launcher.lastStatus = "Launch failed. Check imported files and storage permissions.";
+          m_quitRequested = false;
+          while (!m_quitRequested && !runLauncher(launcher))
+            Thread::sleepPrecise(4);
+          continue;
+        }
+
+        if (startApplication(launcher.lastError))
+          break;
+
+        launcher.lastStatus = "Launch failed. Fix the issue and try again.";
         m_quitRequested = false;
+
         while (!m_quitRequested && !runLauncher(launcher))
           Thread::sleepPrecise(4);
-        continue;
       }
 
-      if (startApplication(launcher.lastError))
+      if (m_quitRequested)
         break;
 
-      launcher.lastStatus = "Launch failed. Fix the issue and try again.";
+      m_runtimeExitReason.clear();
+      try {
+        androidLogInfo("Entering game loop");
+        runGameLoop();
+      } catch (std::exception const& e) {
+        auto message = strf("{}", outputException(e, true));
+        Logger::error("Runtime loop failed: {}", message);
+        launcher.lastError = message;
+        launcher.lastStatus = "Runtime failure. Review error and try again.";
+        if (m_platformServices && m_platformServices->mobileSystemUiService())
+          m_platformServices->mobileSystemUiService()->showDialog("Runtime Error", message);
+      } catch (...) {
+        Logger::error("Runtime loop failed: unknown error");
+        launcher.lastError = "Unknown runtime failure";
+        launcher.lastStatus = "Runtime failure. Review error and try again.";
+        if (m_platformServices && m_platformServices->mobileSystemUiService())
+          m_platformServices->mobileSystemUiService()->showDialog("Runtime Error", "Unknown runtime failure");
+      }
+      if (launcher.lastError.empty() && !m_runtimeExitReason.empty()) {
+        launcher.lastError = m_runtimeExitReason;
+        launcher.lastStatus = "Returned to launcher.";
+      }
+      shutdownApplication();
+      androidLogInfo("Returning to launcher after shutdown");
+      m_runtimeExitReason.clear();
+      m_softQuitRequested = false;
       m_quitRequested = false;
-
+      // Show the post-game launcher. If the user clicks Launch the outer loop
+      // continues and starts a new session; if they quit m_quitRequested is set
+      // and the outer loop exits to teardown.
       while (!m_quitRequested && !runLauncher(launcher))
         Thread::sleepPrecise(4);
     }
-
-    if (m_quitRequested)
-      return 0;
-
-    m_runtimeExitReason.clear();
-    try {
-      androidLogInfo("Entering game loop");
-      runGameLoop();
-    } catch (std::exception const& e) {
-      auto message = strf("{}", outputException(e, true));
-      Logger::error("Runtime loop failed: {}", message);
-      launcher.lastError = message;
-      launcher.lastStatus = "Runtime failure. Review error and try again.";
-      if (m_platformServices && m_platformServices->mobileSystemUiService())
-        m_platformServices->mobileSystemUiService()->showDialog("Runtime Error", message);
-    } catch (...) {
-      Logger::error("Runtime loop failed: unknown error");
-      launcher.lastError = "Unknown runtime failure";
-      launcher.lastStatus = "Runtime failure. Review error and try again.";
-      if (m_platformServices && m_platformServices->mobileSystemUiService())
-        m_platformServices->mobileSystemUiService()->showDialog("Runtime Error", "Unknown runtime failure");
-    }
-    if (launcher.lastError.empty() && !m_runtimeExitReason.empty()) {
-      launcher.lastError = m_runtimeExitReason;
-      launcher.lastStatus = "Returned to launcher.";
-    }
-    shutdownApplication();
-    androidLogInfo("Returning to launcher after shutdown");
-    m_runtimeExitReason.clear();
-    m_softQuitRequested = false;
-    m_quitRequested = false;
-    while (!m_quitRequested && !runLauncher(launcher))
-      Thread::sleepPrecise(4);
 
     shutdownImGui();
     teardownSdl();
@@ -1748,7 +1770,8 @@ private:
     m_textInputApplied = false;
     m_textInputDirty = false;
 #endif
-    m_application.reset();
+    // Do not reset m_application: startup() can be called again for a new
+    // session without rebuilding the entire object.
   }
 
   List<InputEvent> processEvents() {

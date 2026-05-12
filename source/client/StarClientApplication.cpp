@@ -246,6 +246,7 @@ void ClientApplication::shutdown() {
   LuaBindings::clearHttpTrustRequestCallback();
 
   m_mainInterface.reset();
+  m_player.reset();
 
   if (m_universeClient)
     m_universeClient->disconnect();
@@ -263,6 +264,30 @@ void ClientApplication::shutdown() {
 
   m_universeClient.reset();
   m_statistics.reset();
+  m_playerStorage.reset();
+  m_titleScreen.reset();
+  m_worldPainter.reset();
+  m_cinematicOverlay.reset();
+  m_errorScreen.reset();
+
+  // Finish any async root loader thread before tearing down Root.
+  if (m_rootLoader)
+    m_rootLoader.finish();
+  m_reloadListener.reset();
+
+  // Destroy singletons before Root since their destructors may access Root.
+  m_voice.reset();
+  m_input.reset();
+  m_guiContext.reset();
+  m_mainMixer.reset();
+
+  // Reset app state so a subsequent startup()/applicationInit()/renderInit()
+  // cycle works correctly (supports relaunch without process restart).
+  m_state = MainAppState::Startup;
+
+  // Destroy Root last; this clears RootBase::s_singleton so the next
+  // startup() call can construct a fresh Root.
+  m_root.reset();
 }
 
 void ClientApplication::applicationInit(ApplicationControllerPtr appController) {
