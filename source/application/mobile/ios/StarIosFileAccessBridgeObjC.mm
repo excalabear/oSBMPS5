@@ -638,6 +638,44 @@ extern "C" void StarIosBridge_setSdlWindow(void* window) {
   g_sdlWindow = static_cast<SDL_Window*>(window);
 }
 
+extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right) {
+  __block UIEdgeInsets insets = UIEdgeInsetsZero;
+  runOnMainSync(^{
+    UIWindow* window = activeWindow();
+    if (window)
+      insets = window.safeAreaInsets;
+  });
+  if (top)    *top    = (float)insets.top;
+  if (left)   *left   = (float)insets.left;
+  if (bottom) *bottom = (float)insets.bottom;
+  if (right)  *right  = (float)insets.right;
+}
+
+// Returns the current interface orientation as an integer:
+//   1 = Portrait             (notch/DI at top)
+//   2 = LandscapeLeft        (notch/DI on left  — device rotated left)
+//   3 = LandscapeRight       (notch/DI on right — device rotated right)
+//   4 = PortraitUpsideDown   (notch/DI at bottom)
+//   0 = unknown
+extern "C" int StarIosBridge_getInterfaceOrientation() {
+  __block int result = 0;
+  runOnMainSync(^{
+    for (UIScene* scene in [UIApplication sharedApplication].connectedScenes) {
+      UIWindowScene* ws = (UIWindowScene*)[scene isKindOfClass:[UIWindowScene class]] ? (UIWindowScene*)scene : nil;
+      if (!ws) continue;
+      switch (ws.interfaceOrientation) {
+        case UIInterfaceOrientationPortrait:           result = 1; break;
+        case UIInterfaceOrientationLandscapeLeft:      result = 2; break;
+        case UIInterfaceOrientationLandscapeRight:     result = 3; break;
+        case UIInterfaceOrientationPortraitUpsideDown: result = 4; break;
+        default: break;
+      }
+      break;
+    }
+  });
+  return result;
+}
+
 extern "C" char* StarIosBridge_syncBundledAssets(char const* targetRootDirectory) {
   @try {
     @autoreleasepool {

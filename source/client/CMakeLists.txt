@@ -98,24 +98,19 @@ IF (STAR_SYSTEM_ANDROID)
 ENDIF ()
 
 IF (STAR_SYSTEM_IOS)
+  # Info.plist is generated from this template. It bakes in UILaunchScreen (required
+  # on iOS 13+ for full-screen treatment) and UISupportedInterfaceOrientations (all
+  # four, so the app can rotate freely). Xcode substitutes $(PRODUCT_BUNDLE_IDENTIFIER),
+  # $(MARKETING_VERSION), $(CURRENT_PROJECT_VERSION), and $(EXECUTABLE_NAME) at build time.
   SET_TARGET_PROPERTIES(starbound PROPERTIES
     OUTPUT_NAME "OpenStarbound"
-    MACOSX_BUNDLE_BUNDLE_NAME "OpenStarbound"
-    MACOSX_BUNDLE_GUI_IDENTIFIER "com.devoflife.osbm.ios"
-    MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0"
-    MACOSX_BUNDLE_BUNDLE_VERSION "1"
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/ios/Info.plist.in"
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.devoflife.osbm.ios"
     XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
     XCODE_ATTRIBUTE_PRODUCT_NAME "OpenStarbound"
     XCODE_ATTRIBUTE_MARKETING_VERSION "1.0"
     XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION "1"
     XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
-    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleName "OpenStarbound"
-    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleShortVersionString "1.0"
-    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleVersion "1"
-    XCODE_ATTRIBUTE_INFOPLIST_KEY_UIFileSharingEnabled "YES"
-    XCODE_ATTRIBUTE_INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace "YES"
-    XCODE_ATTRIBUTE_INFOPLIST_KEY_CFBundleDisplayName "OpenStarbound"
   )
 
   SET(STAR_IOS_BUNDLE_ASSETS_SOURCE "${PROJECT_SOURCE_DIR}/../assets/opensb")
@@ -124,13 +119,6 @@ IF (STAR_SYSTEM_IOS)
   ADD_CUSTOM_COMMAND(TARGET starbound POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_BUNDLE_ASSETS_DEST}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${STAR_IOS_BUNDLE_ASSETS_SOURCE}" "${STAR_IOS_BUNDLE_ASSETS_DEST}"
-    COMMAND /usr/bin/plutil -replace CFBundleDisplayName -string OpenStarbound "$<TARGET_FILE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleName -string OpenStarbound "$<TARGET_FILE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleIdentifier -string com.devoflife.osbm.ios "$<TARGET_FILE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleShortVersionString -string 1.0 "$<TARGET_FILE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleVersion -string 1 "$<TARGET_FILE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace UIFileSharingEnabled -bool YES "$<TARGET_FILE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES "$<TARGET_FILE_DIR:starbound>/Info.plist"
     COMMENT "Copying OpenStarbound bundled assets into iOS app bundle"
     VERBATIM
   )
@@ -151,13 +139,6 @@ IF (STAR_SYSTEM_IOS)
     COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_IPA_DIR}"
     COMMAND ${CMAKE_COMMAND} -E rm -rf         "${STAR_IOS_IPA_PAYLOAD_DIR}"
     COMMAND ${CMAKE_COMMAND} -E rm -f          "${STAR_IOS_IPA_FILE}"
-    COMMAND /usr/bin/plutil -replace CFBundleDisplayName -string OpenStarbound "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleName -string OpenStarbound "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleIdentifier -string com.devoflife.osbm.ios "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleShortVersionString -string 1.0 "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace CFBundleVersion -string 1 "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace UIFileSharingEnabled -bool YES "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
-    COMMAND /usr/bin/plutil -replace LSSupportsOpeningDocumentsInPlace -bool YES "$<TARGET_BUNDLE_DIR:starbound>/Info.plist"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${STAR_IOS_IPA_PAYLOAD_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "$<TARGET_BUNDLE_DIR:starbound>"

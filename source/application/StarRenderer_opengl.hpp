@@ -118,6 +118,12 @@ public:
 
   void setScreenSize(Vec2U screenSize);
 
+  // Pixel offset of the rendered viewport within the physical framebuffer.
+  // On iOS this is set to the UIKit safe-area insets so the game renders
+  // within the rounded-corner / notch-free region. Defaults to (0, 0).
+  void setScreenOffset(Vec2U offset) { m_screenOffset = offset; }
+  Vec2U screenOffset() const { return m_screenOffset; }
+
   // On iOS EAGL, FBO 0 is not the screen; SDL creates a custom FBO. Store it
   // here so startFrame/finishFrame/blit all render to the right target.
   void setScreenFramebuffer(GLuint fbo) { m_screenFbo = fbo; }
@@ -298,6 +304,7 @@ private:
   void switchGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer);
 
   Vec2U m_screenSize;
+  Vec2U m_screenOffset;
   GLuint m_screenFbo = 0;
 
   GLuint m_program = 0;

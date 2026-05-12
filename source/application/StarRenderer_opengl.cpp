@@ -623,9 +623,14 @@ bool OpenGlRenderer::switchEffectConfig(String const& name) {
     auto buf = getGlFrameBuffer(*frameBufferId);
     switchGlFrameBuffer(buf);
     effectScreenSize = m_screenSize / (buf->sizeDiv);
+    // Intermediate FBOs are canvas-sized with no screen offset; the offset
+    // only applies to the final blit onto the physical screen FBO.
+    glViewport(0, 0, effectScreenSize[0], effectScreenSize[1]);
   } else {
     m_currentFrameBuffer.reset();
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
+    // Restore the screen viewport (canvas positioned at its safe-area offset).
+    glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
   }
 
   glUseProgram(m_program = effect.program);
@@ -663,7 +668,16 @@ void OpenGlRenderer::setScissorRect(Maybe<RectI> const& scissorRect) {
   m_scissorRect = scissorRect;
   if (m_scissorRect) {
     glEnable(GL_SCISSOR_TEST);
+#ifdef STAR_SYSTEM_IOS
+    glScissor(
+      m_scissorRect->xMin() + (GLint)m_screenOffset[0],
+      m_scissorRect->yMin() + (GLint)m_screenOffset[1],
+      m_scissorRect->width(),
+      m_scissorRect->height()
+    );
+#else
     glScissor(m_scissorRect->xMin(), m_scissorRect->yMin(), m_scissorRect->width(), m_scissorRect->height());
+#endif
   } else {
     glDisable(GL_SCISSOR_TEST);
   }
@@ -749,7 +763,7 @@ void OpenGlRenderer::flush(Mat3F const& transformation) {
 
 void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
   m_screenSize = screenSize;
-  glViewport(0, 0, m_screenSize[0], m_screenSize[1]);
+  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
   glUniform2f(m_screenSizeUniform, m_screenSize[0], m_screenSize[1]);
 
   for (auto& frameBuffer : m_frameBuffers) {
@@ -768,7 +782,11 @@ void OpenGlRenderer::setScreenSize(Vec2U screenSize) {
 void OpenGlRenderer::startFrame() {
   if (m_scissorRect)
     glDisable(GL_SCISSOR_TEST);
-  
+
+#ifdef STAR_SYSTEM_IOS
+  glViewport(m_screenOffset[0], m_screenOffset[1], m_screenSize[0], m_screenSize[1]);
+#endif
+
   for (auto& frameBuffer : m_frameBuffers) {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, frameBuffer.second->id);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -1306,11 +1324,12 @@ void OpenGlRenderer::blitGlFrameBuffer(RefPtr<GlFrameBuffer> const& frameBuffer)
     return;
 
   auto& size = m_screenSize;
+  auto& off  = m_screenOffset;
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_screenFbo);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, frameBuffer->id);
   glBlitFramebuffer(
     0, 0, size[0], size[1],
-    0, 0, size[0], size[1],
+    off[0], off[1], off[0] + size[0], off[1] + size[1],
     GL_COLOR_BUFFER_BIT, GL_NEAREST
   );
 

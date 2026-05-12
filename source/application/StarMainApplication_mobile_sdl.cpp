@@ -15,6 +15,8 @@
 #elif STAR_SYSTEM_IOS
 #include "mobile/ios/StarIosFileAccessBridge.hpp"
 extern "C" void StarIosBridge_setSdlWindow(void* window);
+extern "C" void StarIosBridge_getSafeAreaInsets(float* top, float* left, float* bottom, float* right);
+extern "C" int  StarIosBridge_getInterfaceOrientation();
 #endif
 
 #include "SDL3/SDL.h"
@@ -40,6 +42,15 @@ namespace Star {
 
 String getMobileStartupStatus();
 void setMobileStartupStatus(String const& status);
+
+// Physical-pixel safe-area insets (distance from each screen edge).
+// Non-zero only on iOS where UIKit rounds corners and hosts a notch/island.
+struct SafeAreaInsets {
+  unsigned top = 0, left = 0, bottom = 0, right = 0;
+  bool operator==(SafeAreaInsets const& o) const {
+    return top == o.top && left == o.left && bottom == o.bottom && right == o.right;
+  }
+};
 
 namespace {
 
@@ -188,8 +199,8 @@ struct LauncherState {
 
 class MobileTouchInputAdapter {
 public:
-  explicit MobileTouchInputAdapter(Vec2U* windowSize, float* displayScale = nullptr)
-    : m_windowSize(windowSize), m_displayScalePtr(displayScale) {}
+  explicit MobileTouchInputAdapter(Vec2U* windowSize, float* displayScale = nullptr, SafeAreaInsets* safeArea = nullptr)
+    : m_windowSize(windowSize), m_displayScalePtr(displayScale), m_safeAreaPtr(safeArea) {}
 
   void setConfig(MobileTouchConfig config) {
     m_config = config;
@@ -243,7 +254,14 @@ public:
     Vec2F drawScale = physicalToDrawScale();
     float radiusScale = std::max(1.0f, std::min(drawScale[0], drawScale[1]));
     float dr = radius / radiusScale;
-    auto ip = [drawScale](Vec2F const& v) { return ImVec2(v[0] / drawScale[0], v[1] / drawScale[1]); };
+    // Convert canvas-pixel positions to ImGui window coordinates.
+    // Safe-area insets are in physical pixels; divide by drawScale to get ImGui
+    // units and add as an offset so buttons are placed inside the safe area.
+    float saOffX = m_safeAreaPtr ? (float)m_safeAreaPtr->left / drawScale[0] : 0.0f;
+    float saOffY = m_safeAreaPtr ? (float)m_safeAreaPtr->top  / drawScale[1] : 0.0f;
+    auto ip = [drawScale, saOffX, saOffY](Vec2F const& v) {
+      return ImVec2(saOffX + v[0] / drawScale[0], saOffY + v[1] / drawScale[1]);
+    };
 
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     ImU32 base = IM_COL32(255, 255, 255, (int)(180.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
@@ -289,18 +307,20 @@ private:
     return (p - center).magnitudeSquared() <= radius * radius;
   }
 
-  // ImGui draw lists use SDL window coordinates, while the game renderer and
-  // generated input events use physical pixels. Measure that relationship from
-  // ImGui itself instead of assuming SDL's display density is the right value:
-  // Android commonly reports a density of 2-3 while ImGui is still in physical
-  // pixels, whereas iOS usually renders ImGui in logical points.
+  // ImGui draw lists use SDL window coordinates (logical points on iOS, physical
+  // pixels on Android).  Derive the physical-pixel-to-ImGui-unit ratio from the
+  // full SDL window size so the scale is always the true device pixel ratio,
+  // independent of any safe-area inset.  Safe-area offsets are applied separately
+  // in drawOverlay() so buttons land at the correct physical position.
   Vec2F physicalToDrawScale() const {
+    Vec2U const& ws = *m_windowSize;
+
     if (ImGui::GetCurrentContext()) {
       ImVec2 displaySize = ImGui::GetIO().DisplaySize;
       if (displaySize.x > 0.0f && displaySize.y > 0.0f)
         return {
-          std::max(1.0f, (float)(*m_windowSize)[0] / displaySize.x),
-          std::max(1.0f, (float)(*m_windowSize)[1] / displaySize.y)
+          std::max(1.0f, (float)ws[0] / displaySize.x),
+          std::max(1.0f, (float)ws[1] / displaySize.y)
         };
     }
 
@@ -344,36 +364,41 @@ private:
   Vec2F toScreen(float x, float y) const {
     // SDL finger events can be normalized [0..1] or already in render-space
     // depending on conversion/platform path.
+    Vec2F pos;
     if (x >= 0.0f && x <= 1.0f && y >= 0.0f && y <= 1.0f) {
-      return {
+      pos = {
         x * (float)(*m_windowSize)[0],
         y * (float)(*m_windowSize)[1]
       };
-    }
-
-    if (ImGui::GetCurrentContext()) {
+    } else if (ImGui::GetCurrentContext()) {
       ImVec2 displaySize = ImGui::GetIO().DisplaySize;
       Vec2F drawScale = physicalToDrawScale();
       if (displaySize.x > 0.0f && displaySize.y > 0.0f && (drawScale[0] > 1.0f || drawScale[1] > 1.0f)
           && x >= 0.0f && x <= displaySize.x && y >= 0.0f && y <= displaySize.y) {
-        return {
-          x * drawScale[0],
-          y * drawScale[1]
-        };
+        pos = { x * drawScale[0], y * drawScale[1] };
+      } else {
+        pos = { x, y };
       }
+    } else {
+      pos = { x, y };
     }
 
-    return {
-      x,
-      y
-    };
+    // Translate from full-screen physical coords to game-canvas coords by
+    // subtracting the safe-area insets (top-left origin offset).
+    if (m_safeAreaPtr) {
+      pos[0] -= (float)m_safeAreaPtr->left;
+      pos[1] -= (float)m_safeAreaPtr->top;
+    }
+    return pos;
   }
 
   Vec2F toInputSpace(Vec2F const& pos) const {
-    return {
-      pos[0],
-      (float)(*m_windowSize)[1] - pos[1]
-    };
+    // Y-flip: game input space has y=0 at bottom; screen space has y=0 at top.
+    // Use game-canvas height (window minus safe area) to match the renderer.
+    unsigned gameH = (*m_windowSize)[1];
+    if (m_safeAreaPtr && (*m_windowSize)[1] > m_safeAreaPtr->top + m_safeAreaPtr->bottom)
+      gameH -= m_safeAreaPtr->top + m_safeAreaPtr->bottom;
+    return { pos[0], (float)gameH - pos[1] };
   }
 
   void assignFinger(uint64_t finger, Vec2F const& pos) {
@@ -538,14 +563,26 @@ private:
   }
 
   void updateButtonCenters(float radius) {
-    float w = (float)(*m_windowSize)[0];
-    float h = (float)(*m_windowSize)[1];
+    // Work in game-canvas coordinates: (0,0) = top-left of safe area.
+    float w, h;
+    Vec2U const& ws = *m_windowSize;
+    if (m_safeAreaPtr) {
+      w = (float)(ws[0] > m_safeAreaPtr->left + m_safeAreaPtr->right
+                    ? ws[0] - m_safeAreaPtr->left - m_safeAreaPtr->right
+                    : ws[0]);
+      h = (float)(ws[1] > m_safeAreaPtr->top + m_safeAreaPtr->bottom
+                    ? ws[1] - m_safeAreaPtr->top - m_safeAreaPtr->bottom
+                    : ws[1]);
+    } else {
+      w = (float)ws[0];
+      h = (float)ws[1];
+    }
     float pad = radius * 1.25f;
 
-    m_jumpButtonCenter = Vec2F(w - pad * 1.2f, h - pad * 1.4f);
+    m_jumpButtonCenter     = Vec2F(w - pad * 1.2f, h - pad * 1.4f);
     m_interactButtonCenter = Vec2F(w - pad * 2.7f, h - pad * 1.8f);
-    m_pauseButtonCenter = Vec2F(pad * 1.35f, pad * 1.15f);
-    m_chatButtonCenter = Vec2F(w - pad * 1.9f, h - pad * 0.6f);
+    m_pauseButtonCenter    = Vec2F(pad * 1.35f,    pad * 1.15f);
+    m_chatButtonCenter     = Vec2F(w - pad * 1.9f, h - pad * 0.6f);
   }
 
   void emitActionEdges() {
@@ -632,6 +669,7 @@ private:
 
   Vec2U* m_windowSize;
   [[maybe_unused]] float* m_displayScalePtr = nullptr;
+  SafeAreaInsets* m_safeAreaPtr = nullptr;
   MobileTouchConfig m_config;
   List<InputEvent> m_generatedEvents;
 
@@ -1015,6 +1053,9 @@ private:
 #ifdef STAR_SYSTEM_IOS
     // We provide our own iOS main wrapper; mark main ready before SDL_Init.
     SDL_SetMainReady();
+    // Declare all four orientations so SDL's UIViewController honours rotation.
+    // Must be set before SDL_Init; Info.plist alone is not enough for SDL3.
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "Portrait PortraitUpsideDown LandscapeLeft LandscapeRight");
 #endif
 #ifdef STAR_SYSTEM_ANDROID
     SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "0");
@@ -1093,6 +1134,12 @@ private:
 
 #ifdef STAR_SYSTEM_IOS
     StarIosBridge_setSdlWindow(m_window);
+    // Explicitly request fullscreen so the SDL window covers the entire screen
+    // on all iOS versions. On iOS 26+ the implicit "0x0 = fullscreen" behaviour
+    // is not guaranteed, and without this call the window may be inset,
+    // producing black bars around the content.
+    if (!SDL_SetWindowFullscreen(m_window, true))
+      androidLogInfo("setupWindowAndRenderer: SDL_SetWindowFullscreen failed: %s", SDL_GetError());
 #endif
 
     m_glContext = SDL_GL_CreateContext(m_window);
@@ -1118,7 +1165,10 @@ private:
 #endif
 
     syncWindowMetrics(false);
-    m_renderer->setScreenSize(m_windowSize);
+    // syncWindowMetrics already called setScreenSize; this is redundant but
+    // harmless — leave it in case syncWindowMetrics had no size change yet.
+    m_renderer->setScreenOffset(Vec2U(m_safeArea.left, m_safeArea.bottom));
+    m_renderer->setScreenSize(gameCanvasSize());
   }
 
   void setupImGui() {
@@ -1465,7 +1515,7 @@ private:
 #ifdef STAR_SYSTEM_IOS
     glBindFramebuffer(GL_FRAMEBUFFER, m_renderer->screenFramebuffer());
 #endif
-    glViewport(0, 0, (int)m_windowSize[0], (int)m_windowSize[1]);
+    glViewport((int)m_safeArea.left, (int)m_safeArea.bottom, (int)gameCanvasSize()[0], (int)gameCanvasSize()[1]);
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1659,7 +1709,7 @@ private:
       setMobileStartupStatus("Initializing touch controls...");
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
-      m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_displayScale);
+      m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_displayScale, &m_safeArea);
 
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
@@ -1715,7 +1765,7 @@ private:
 #ifdef STAR_SYSTEM_IOS
     glBindFramebuffer(GL_FRAMEBUFFER, m_renderer->screenFramebuffer());
 #endif
-    glViewport(0, 0, (int)m_windowSize[0], (int)m_windowSize[1]);
+    glViewport((int)m_safeArea.left, (int)m_safeArea.bottom, (int)gameCanvasSize()[0], (int)gameCanvasSize()[1]);
     glClearColor(0.05f, 0.05f, 0.07f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1725,6 +1775,15 @@ private:
   void runGameLoop() {
     m_updateTicker.reset();
     m_renderTicker.reset();
+
+#ifdef STAR_SYSTEM_IOS
+    // Notify the game of the canvas size before the first frame.  syncWindowMetrics
+    // won't fire windowChanged when the safe area is already stable from
+    // setupWindowAndRenderer, so the game would otherwise use the full physical
+    // screen size for UI layout while the shader clips to the smaller canvas.
+    if (m_application)
+      m_application->windowChanged(WindowMode::Normal, gameCanvasSize());
+#endif
 
     while (!m_quitRequested && !m_softQuitRequested) {
 #ifdef STAR_SYSTEM_IOS
@@ -1928,6 +1987,16 @@ private:
     return false;
   }
 
+  // Returns the physical-pixel game canvas size (window minus safe area).
+  Vec2U gameCanvasSize() const {
+    Vec2U s = m_windowSize;
+    if (s[0] > m_safeArea.left + m_safeArea.right)
+      s[0] -= m_safeArea.left + m_safeArea.right;
+    if (s[1] > m_safeArea.top + m_safeArea.bottom)
+      s[1] -= m_safeArea.top + m_safeArea.bottom;
+    return s;
+  }
+
   bool syncWindowMetrics(bool notifyApplication) {
     Vec2U queriedSize;
     bool hasSize = queryWindowPixelSize(queriedSize);
@@ -1944,12 +2013,68 @@ private:
         m_displayScale = displayScale;
     }
 
+#ifdef STAR_SYSTEM_IOS
+    // Re-query safe-area insets every time (they change on rotation).
+    {
+      float saTop = 0, saLeft = 0, saBottom = 0, saRight = 0;
+      StarIosBridge_getSafeAreaInsets(&saTop, &saLeft, &saBottom, &saRight);
+
+      // iOS reports symmetric insets on both landscape edges even though only
+      // one edge has the actual notch / Dynamic Island.  Query the current
+      // interface orientation so we apply an inset ONLY on the hardware-notch
+      // edge and leave all other edges at zero.
+      //
+      // Orientation values: 1=Portrait, 2=LandscapeLeft (notch on left),
+      //                     3=LandscapeRight (notch on right), 4=PortraitUD
+      int orient = StarIosBridge_getInterfaceOrientation();
+      switch (orient) {
+        case 2: // LandscapeLeft  — notch/DI is on the RIGHT of the screen
+          saLeft   = 0.0f;
+          saTop    = 0.0f;
+          saBottom = 0.0f;
+          break;
+        case 3: // LandscapeRight — notch/DI is on the LEFT of the screen
+          saRight  = 0.0f;
+          saTop    = 0.0f;
+          saBottom = 0.0f;
+          break;
+        case 4: // PortraitUpsideDown — notch/DI at bottom
+          saTop    = 0.0f;
+          saLeft   = 0.0f;
+          saRight  = 0.0f;
+          break;
+        default: // Portrait (1) or unknown (0) — notch/DI at top
+          saLeft   = 0.0f;
+          saRight  = 0.0f;
+          saBottom = 0.0f;
+          break;
+      }
+
+      float scale = std::max(1.0f, std::round(m_displayScale));
+      SafeAreaInsets newSA{
+          (unsigned)std::round(saTop    * scale),
+          (unsigned)std::round(saLeft   * scale),
+          (unsigned)std::round(saBottom * scale),
+          (unsigned)std::round(saRight  * scale)
+      };
+      if (!(newSA == m_safeArea)) {
+        m_safeArea = newSA;
+        sizeChanged = true;
+      }
+    }
+#endif
+
     if (sizeChanged) {
-      if (m_renderer)
-        m_renderer->setScreenSize(m_windowSize);
+      Vec2U canvas = gameCanvasSize();
+      if (m_renderer) {
+        // Viewport origin: safe-area left offset (x) and bottom offset (y) in
+        // OpenGL convention where y=0 is the physical bottom of the screen.
+        m_renderer->setScreenOffset(Vec2U(m_safeArea.left, m_safeArea.bottom));
+        m_renderer->setScreenSize(canvas);
+      }
 
       if (notifyApplication && m_application)
-        m_application->windowChanged(WindowMode::Normal, m_windowSize);
+        m_application->windowChanged(WindowMode::Normal, canvas);
 
       refreshImGuiScale();
     } else if (ImGui::GetCurrentContext()) {
@@ -1967,7 +2092,8 @@ private:
     auto& io = ImGui::GetIO();
 #ifdef STAR_SYSTEM_IOS
     float pixelScale = std::max(1.0f, std::round(m_displayScale));
-    float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]) / pixelScale;
+    Vec2U canvas = gameCanvasSize();
+    float shortSide = (float)std::min(canvas[0], canvas[1]) / pixelScale;
     io.FontGlobalScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
 #else
     float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]);
@@ -1984,7 +2110,8 @@ private:
 
 #ifdef STAR_SYSTEM_IOS
     float pixelScale = std::max(1.0f, std::round(m_displayScale));
-    return ImVec2((float)m_windowSize[0] / pixelScale, (float)m_windowSize[1] / pixelScale);
+    Vec2U canvas = gameCanvasSize();
+    return ImVec2((float)canvas[0] / pixelScale, (float)canvas[1] / pixelScale);
 #else
     return ImVec2((float)m_windowSize[0], (float)m_windowSize[1]);
 #endif
@@ -2027,6 +2154,7 @@ private:
 
   String m_windowTitle = "OpenStarbound";
   Vec2U m_windowSize = {1280, 720};
+  SafeAreaInsets m_safeArea;
   bool m_vsync = true;
   bool m_cursorVisible = true;
   bool m_cursorHardware = false;
