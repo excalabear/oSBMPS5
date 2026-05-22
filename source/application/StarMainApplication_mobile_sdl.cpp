@@ -173,6 +173,182 @@ struct MobileTouchConfig {
   float deadzone = 0.15f;
 };
 
+enum class MobileTouchElementKind {
+  Joystick,
+  Button,
+  DPad
+};
+
+enum class MobileTouchActionKind {
+  Key,
+  MouseWheelUp,
+  MouseWheelDown,
+  None
+};
+
+struct MobileTouchAction {
+  MobileTouchActionKind kind = MobileTouchActionKind::Key;
+  Key key = Key::Space;
+};
+
+struct MobileTouchElement {
+  String id;
+  String label;
+  MobileTouchElementKind kind = MobileTouchElementKind::Button;
+  bool enabled = true;
+  Vec2F position;
+  float size = 1.0f;
+  MobileTouchAction action;
+  MobileTouchAction upAction;
+  MobileTouchAction downAction;
+  MobileTouchAction leftAction;
+  MobileTouchAction rightAction;
+};
+
+static String actionName(MobileTouchAction const& action) {
+  switch (action.kind) {
+    case MobileTouchActionKind::Key:
+      return KeyNames.getRight(action.key);
+    case MobileTouchActionKind::MouseWheelUp:
+      return "Scroll Up";
+    case MobileTouchActionKind::MouseWheelDown:
+      return "Scroll Down";
+    default:
+      return "None";
+  }
+}
+
+static MobileTouchAction keyAction(Key key) {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::Key;
+  action.key = key;
+  return action;
+}
+
+static MobileTouchAction wheelAction(bool up) {
+  MobileTouchAction action;
+  action.kind = up ? MobileTouchActionKind::MouseWheelUp : MobileTouchActionKind::MouseWheelDown;
+  return action;
+}
+
+static std::vector<MobileTouchElement> defaultTouchElements() {
+  return {
+    {"joystick", "Joystick", MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
+    {"jump", "J", MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
+    {"interact", "E", MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
+    {"pause", "ESC", MobileTouchElementKind::Button, true, {0.10f, 0.15f}, 0.96f, keyAction(Key::Escape), {}, {}, {}, {}},
+    {"chat", "T", MobileTouchElementKind::Button, true, {0.83f, 0.90f}, 0.72f, keyAction(Key::Return), {}, {}, {}, {}},
+    {"tech", "F", MobileTouchElementKind::Button, true, {0.92f, 0.58f}, 0.86f, keyAction(Key::F), {}, {}, {}, {}},
+    {"shift", "Shift", MobileTouchElementKind::Button, false, {0.66f, 0.88f}, 0.82f, keyAction(Key::LShift), {}, {}, {}, {}},
+    {"ctrl", "Ctrl", MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
+    {"dpad", "D-PAD", MobileTouchElementKind::DPad, false, {0.16f, 0.74f}, 1.05f, keyAction(Key::Space),
+      keyAction(Key::W), keyAction(Key::S), keyAction(Key::A), keyAction(Key::D)}
+  };
+}
+
+static String elementKindName(MobileTouchElementKind kind) {
+  switch (kind) {
+    case MobileTouchElementKind::Joystick:
+      return "joystick";
+    case MobileTouchElementKind::DPad:
+      return "dpad";
+    default:
+      return "button";
+  }
+}
+
+static MobileTouchElementKind elementKindFromName(String const& name) {
+  if (name.equals("joystick", String::CaseInsensitive))
+    return MobileTouchElementKind::Joystick;
+  if (name.equals("dpad", String::CaseInsensitive))
+    return MobileTouchElementKind::DPad;
+  return MobileTouchElementKind::Button;
+}
+
+static Json jsonFromTouchAction(MobileTouchAction const& action) {
+  if (action.kind == MobileTouchActionKind::MouseWheelUp)
+    return JsonObject{{"type", "wheel"}, {"direction", "up"}};
+  if (action.kind == MobileTouchActionKind::MouseWheelDown)
+    return JsonObject{{"type", "wheel"}, {"direction", "down"}};
+  if (action.kind == MobileTouchActionKind::None)
+    return JsonObject{{"type", "none"}};
+  return JsonObject{{"type", "key"}, {"key", KeyNames.getRight(action.key)}};
+}
+
+static MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction def) {
+  auto type = json.getString("type", "key");
+  if (type.equals("wheel", String::CaseInsensitive))
+    return wheelAction(!json.getString("direction", "up").equals("down", String::CaseInsensitive));
+  if (type.equals("none", String::CaseInsensitive))
+    return MobileTouchAction{MobileTouchActionKind::None, Key::Space};
+  auto keyName = json.getString("key", KeyNames.getRight(def.key));
+  return keyAction(KeyNames.valueLeft(keyName, def.key));
+}
+
+static Json jsonFromTouchElement(MobileTouchElement const& element) {
+  JsonObject out{
+    {"id", element.id},
+    {"label", element.label},
+    {"kind", elementKindName(element.kind)},
+    {"enabled", element.enabled},
+    {"position", JsonArray{element.position[0], element.position[1]}},
+    {"size", element.size},
+    {"action", jsonFromTouchAction(element.action)}
+  };
+  if (element.kind == MobileTouchElementKind::DPad) {
+    out["upAction"] = jsonFromTouchAction(element.upAction);
+    out["downAction"] = jsonFromTouchAction(element.downAction);
+    out["leftAction"] = jsonFromTouchAction(element.leftAction);
+    out["rightAction"] = jsonFromTouchAction(element.rightAction);
+  }
+  return out;
+}
+
+static MobileTouchElement touchElementFromJson(Json const& json, MobileTouchElement def) {
+  def.id = json.getString("id", def.id);
+  def.label = json.getString("label", def.label);
+  def.kind = elementKindFromName(json.getString("kind", elementKindName(def.kind)));
+  def.enabled = json.getBool("enabled", def.enabled);
+  def.size = json.getFloat("size", def.size);
+  if (auto pos = json.optArray("position")) {
+    if (pos->size() >= 2)
+      def.position = Vec2F(pos->get(0).toFloat(), pos->get(1).toFloat());
+  }
+  def.action = touchActionFromJson(json.get("action", jsonFromTouchAction(def.action)), def.action);
+  def.upAction = touchActionFromJson(json.get("upAction", jsonFromTouchAction(def.upAction)), def.upAction);
+  def.downAction = touchActionFromJson(json.get("downAction", jsonFromTouchAction(def.downAction)), def.downAction);
+  def.leftAction = touchActionFromJson(json.get("leftAction", jsonFromTouchAction(def.leftAction)), def.leftAction);
+  def.rightAction = touchActionFromJson(json.get("rightAction", jsonFromTouchAction(def.rightAction)), def.rightAction);
+  return def;
+}
+
+static JsonArray jsonFromTouchElements(std::vector<MobileTouchElement> const& elements) {
+  JsonArray out;
+  for (auto const& element : elements)
+    out.append(jsonFromTouchElement(element));
+  return out;
+}
+
+static std::vector<MobileTouchElement> touchElementsFromConfig(Json const& config) {
+  auto elements = defaultTouchElements();
+  if (auto saved = config.optQueryArray("touch.elements")) {
+    for (auto const& savedElementJson : *saved) {
+      String id = savedElementJson.getString("id", "");
+      bool merged = false;
+      for (auto& element : elements) {
+        if (element.id == id) {
+          element = touchElementFromJson(savedElementJson, element);
+          merged = true;
+          break;
+        }
+      }
+      if (!merged && !id.empty())
+        elements.push_back(touchElementFromJson(savedElementJson, MobileTouchElement{}));
+    }
+  }
+  return elements;
+}
+
 struct LauncherModEntry {
   String displayName;
   String path;
@@ -186,6 +362,13 @@ struct LauncherState {
   String lastError;
   String lastStatus;
   MobileTouchConfig touchConfig;
+  std::vector<MobileTouchElement> touchElements;
+  bool touchManagerOpen = false;
+  bool touchPreviewOpen = false;
+  int selectedTouchElement = 0;
+  bool newTouchButtonPopup = false;
+  int newTouchActionIndex = 0;
+  float newTouchButtonSize = 1.0f;
   bool modManagerOpen = false;
   bool modListDirty = true;
   bool modShowPackedPaks = true;
@@ -204,6 +387,10 @@ public:
 
   void setConfig(MobileTouchConfig config) {
     m_config = config;
+  }
+
+  void setElements(std::vector<MobileTouchElement> elements) {
+    m_elements = std::move(elements);
   }
 
   void beginFrame() {
@@ -249,11 +436,9 @@ public:
       return;
 
     float radius = controlRadius();
-    updateButtonCenters(radius);
 
     Vec2F drawScale = physicalToDrawScale();
     float radiusScale = std::max(1.0f, std::min(drawScale[0], drawScale[1]));
-    float dr = radius / radiusScale;
     // Convert canvas-pixel positions to ImGui window coordinates.
     // Safe-area insets are in physical pixels; divide by drawScale to get ImGui
     // units and add as an offset so buttons are placed inside the safe area.
@@ -267,15 +452,24 @@ public:
     ImU32 base = IM_COL32(255, 255, 255, (int)(180.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
     ImU32 fill = IM_COL32(80, 160, 255, (int)(140.0f * std::clamp(m_config.opacity, 0.0f, 1.0f)));
 
-    if (m_joystickActive) {
-      draw->AddCircle(ip(m_joystickOrigin), dr, base, 48, 3.0f);
-      draw->AddCircleFilled(ip(m_joystickCurrent), dr * 0.45f, fill, 32);
-    }
+    for (auto const& element : m_elements) {
+      if (!element.enabled)
+        continue;
 
-    drawButton(draw, ip(m_jumpButtonCenter), dr * 0.55f, m_jumpHeld, "J", base, fill);
-    drawButton(draw, ip(m_interactButtonCenter), dr * 0.50f, m_interactHeld, "E", base, fill);
-    drawButton(draw, ip(m_pauseButtonCenter), dr * 0.52f, m_pauseHeld, "ESC", base, fill);
-    drawButton(draw, ip(m_chatButtonCenter), dr * 0.38f, m_chatHeld, "T", base, fill);
+      Vec2F center = elementCenter(element);
+      float elementRadius = radius * std::clamp(element.size, 0.45f, 2.4f);
+      float drawRadius = elementRadius / radiusScale;
+
+      if (element.kind == MobileTouchElementKind::Joystick) {
+        draw->AddCircle(ip(center), drawRadius, base, 48, 3.0f);
+        if (m_joystickActive && m_joystickElementId == element.id)
+          draw->AddCircleFilled(ip(m_joystickCurrent), drawRadius * 0.45f, fill, 32);
+      } else if (element.kind == MobileTouchElementKind::DPad) {
+        drawDPad(draw, ip(center), drawRadius, element.id, base, fill);
+      } else {
+        drawButton(draw, ip(center), drawRadius * 0.55f, heldElement(element.id), element.label.utf8Ptr(), base, fill);
+      }
+    }
   }
 
   bool overlayEnabled() const {
@@ -289,22 +483,56 @@ private:
     Aim,
     SuppressedTap,
     SecondaryHold,
-    JumpButton,
-    InteractButton,
-    PauseButton,
-    ChatButton
+    ActionButton,
+    DPad
   };
 
   struct FingerState {
     FingerRole role = FingerRole::None;
     Vec2F startPos;
     Vec2F currentPos;
+    String elementId;
+    MobileTouchAction action;
     int64_t downTimeMs = 0;
     bool movedTooFarForTap = false;
   };
 
   static bool insideCircle(Vec2F const& p, Vec2F const& center, float radius) {
     return (p - center).magnitudeSquared() <= radius * radius;
+  }
+
+  Vec2F canvasSize() const {
+    Vec2U const& ws = *m_windowSize;
+    float w = (float)ws[0];
+    float h = (float)ws[1];
+    if (m_safeAreaPtr) {
+      if (ws[0] > m_safeAreaPtr->left + m_safeAreaPtr->right)
+        w = (float)(ws[0] - m_safeAreaPtr->left - m_safeAreaPtr->right);
+      if (ws[1] > m_safeAreaPtr->top + m_safeAreaPtr->bottom)
+        h = (float)(ws[1] - m_safeAreaPtr->top - m_safeAreaPtr->bottom);
+    }
+    return {w, h};
+  }
+
+  Vec2F elementCenter(MobileTouchElement const& element) const {
+    Vec2F s = canvasSize();
+    return {
+      std::clamp(element.position[0], 0.02f, 0.98f) * s[0],
+      std::clamp(element.position[1], 0.02f, 0.98f) * s[1]
+    };
+  }
+
+  MobileTouchElement const* findElement(String const& id) const {
+    for (auto const& element : m_elements) {
+      if (element.id == id)
+        return &element;
+    }
+    return nullptr;
+  }
+
+  bool heldElement(String const& id) const {
+    return m_heldElements.contains(id) || m_dpadHeld.contains(id + ":up") || m_dpadHeld.contains(id + ":down")
+        || m_dpadHeld.contains(id + ":left") || m_dpadHeld.contains(id + ":right");
   }
 
   // ImGui draw lists use SDL window coordinates (logical points on iOS, physical
@@ -405,34 +633,51 @@ private:
     if (m_fingers.contains(finger))
       return;
 
+    m_lastPointerInput = toInputSpace(pos);
     float radius = controlRadius();
-    updateButtonCenters(radius);
 
     FingerState state;
     state.startPos = pos;
     state.currentPos = pos;
     state.downTimeMs = Time::monotonicMilliseconds();
-    float w = (float)(*m_windowSize)[0];
-    float h = (float)(*m_windowSize)[1];
-    if (insideCircle(pos, m_pauseButtonCenter, radius * 0.60f)) {
-      state.role = FingerRole::PauseButton;
-      m_pauseHeld = true;
-    } else if (insideCircle(pos, m_jumpButtonCenter, radius * 0.70f)) {
-      state.role = FingerRole::JumpButton;
-      m_jumpHeld = true;
-    } else if (insideCircle(pos, m_interactButtonCenter, radius * 0.65f)) {
-      state.role = FingerRole::InteractButton;
-      m_interactHeld = true;
-    } else if (insideCircle(pos, m_chatButtonCenter, radius * 0.52f)) {
-      state.role = FingerRole::ChatButton;
-      m_chatHeld = true;
-    } else if (pos[0] < w * 0.35f && pos[1] > h * 0.60f && !m_joystickActive) {
-      state.role = FingerRole::Joystick;
-      m_joystickActive = true;
-      m_joystickFinger = finger;
-      m_joystickOrigin = pos;
-      m_joystickCurrent = pos;
-      m_moveVec = {};
+
+    bool claimedControl = false;
+    for (auto const& element : m_elements) {
+      if (!element.enabled)
+        continue;
+
+      Vec2F center = elementCenter(element);
+      float elementRadius = radius * std::clamp(element.size, 0.45f, 2.4f);
+      if (element.kind == MobileTouchElementKind::Button && insideCircle(pos, center, elementRadius * 0.70f)) {
+        state.role = FingerRole::ActionButton;
+        state.elementId = element.id;
+        state.action = element.action;
+        m_heldElements.add(element.id);
+        setAction(element.action, true);
+        claimedControl = true;
+        break;
+      } else if (element.kind == MobileTouchElementKind::DPad && insideCircle(pos, center, elementRadius * 1.15f)) {
+        state.role = FingerRole::DPad;
+        state.elementId = element.id;
+        updateDPadFinger(state, pos);
+        claimedControl = true;
+        break;
+      } else if (element.kind == MobileTouchElementKind::Joystick && insideCircle(pos, center, elementRadius * 1.25f) && !m_joystickActive) {
+        state.role = FingerRole::Joystick;
+        state.elementId = element.id;
+        m_joystickActive = true;
+        m_joystickFinger = finger;
+        m_joystickElementId = element.id;
+        m_joystickOrigin = center;
+        m_joystickCurrent = pos;
+        m_moveVec = {};
+        claimedControl = true;
+        break;
+      }
+    }
+
+    if (claimedControl) {
+      // already assigned above
     } else if (m_joystickActive && insideCircle(pos, m_joystickOrigin, radius * 1.35f)) {
       // Prevent accidental aiming while thumb rides around the virtual joystick.
       // Quick taps in this region still become UI clicks on release.
@@ -471,11 +716,14 @@ private:
     if (!ptr)
       return;
 
+    m_lastPointerInput = toInputSpace(pos);
     trackTapMotion(*ptr, pos);
 
     if (ptr->role == FingerRole::Joystick) {
       m_joystickCurrent = pos;
       float radius = controlRadius();
+      if (auto element = findElement(ptr->elementId))
+        radius *= std::clamp(element->size, 0.45f, 2.4f);
       Vec2F delta = pos - m_joystickOrigin;
       float mag = delta.magnitude();
       if (mag > radius)
@@ -492,6 +740,8 @@ private:
     } else if (ptr->role == FingerRole::SecondaryHold && m_secondaryMouseHeld) {
       m_secondaryTouchPos = m_primaryHeld ? m_primaryTouchPos : pos;
       emitMouseMove(m_secondaryTouchPos);
+    } else if (ptr->role == FingerRole::DPad) {
+      updateDPadFinger(*ptr, pos);
     }
   }
 
@@ -507,6 +757,7 @@ private:
         if (tap && m_moveVec.magnitudeSquared() <= m_config.deadzone * m_config.deadzone)
           emitMouseClick(pos);
         m_joystickActive = false;
+        m_joystickElementId.clear();
         m_moveVec = {};
         m_joystickFinger = 0;
         break;
@@ -543,17 +794,12 @@ private:
         }
         m_primaryPausedForSecondary = false;
         break;
-      case FingerRole::JumpButton:
-        m_jumpHeld = false;
+      case FingerRole::ActionButton:
+        m_heldElements.remove(ptr->elementId);
+        setAction(ptr->action, false);
         break;
-      case FingerRole::InteractButton:
-        m_interactHeld = false;
-        break;
-      case FingerRole::PauseButton:
-        m_pauseHeld = false;
-        break;
-      case FingerRole::ChatButton:
-        m_chatHeld = false;
+      case FingerRole::DPad:
+        clearDPad(ptr->elementId);
         break;
       default:
         break;
@@ -562,27 +808,82 @@ private:
     m_fingers.remove(finger);
   }
 
-  void updateButtonCenters(float radius) {
-    // Work in game-canvas coordinates: (0,0) = top-left of safe area.
-    float w, h;
-    Vec2U const& ws = *m_windowSize;
-    if (m_safeAreaPtr) {
-      w = (float)(ws[0] > m_safeAreaPtr->left + m_safeAreaPtr->right
-                    ? ws[0] - m_safeAreaPtr->left - m_safeAreaPtr->right
-                    : ws[0]);
-      h = (float)(ws[1] > m_safeAreaPtr->top + m_safeAreaPtr->bottom
-                    ? ws[1] - m_safeAreaPtr->top - m_safeAreaPtr->bottom
-                    : ws[1]);
-    } else {
-      w = (float)ws[0];
-      h = (float)ws[1];
-    }
-    float pad = radius * 1.25f;
+  MobileTouchAction dpadAction(MobileTouchElement const& element, String const& direction) const {
+    if (direction == "up")
+      return element.upAction;
+    if (direction == "down")
+      return element.downAction;
+    if (direction == "left")
+      return element.leftAction;
+    if (direction == "right")
+      return element.rightAction;
+    return {};
+  }
 
-    m_jumpButtonCenter     = Vec2F(w - pad * 1.2f, h - pad * 1.4f);
-    m_interactButtonCenter = Vec2F(w - pad * 2.7f, h - pad * 1.8f);
-    m_pauseButtonCenter    = Vec2F(pad * 1.35f,    pad * 1.15f);
-    m_chatButtonCenter     = Vec2F(w - pad * 1.9f, h - pad * 0.6f);
+  String dpadDirection(MobileTouchElement const& element, Vec2F const& pos) const {
+    Vec2F delta = pos - elementCenter(element);
+    float radius = controlRadius() * std::clamp(element.size, 0.45f, 2.4f);
+    if (delta.magnitude() < radius * 0.25f)
+      return {};
+    if (std::abs(delta[0]) > std::abs(delta[1]))
+      return delta[0] > 0.0f ? "right" : "left";
+    return delta[1] > 0.0f ? "down" : "up";
+  }
+
+  void updateDPadFinger(FingerState& state, Vec2F const& pos) {
+    auto element = findElement(state.elementId);
+    if (!element)
+      return;
+
+    String direction = dpadDirection(*element, pos);
+    String activeId = direction.empty() ? String() : state.elementId + ":" + direction;
+    for (auto const& candidate : {"up", "down", "left", "right"}) {
+      String id = state.elementId + ":" + candidate;
+      if (id != activeId && m_dpadHeld.contains(id)) {
+        m_dpadHeld.remove(id);
+        setAction(dpadAction(*element, candidate), false);
+      }
+    }
+
+    if (!activeId.empty() && !m_dpadHeld.contains(activeId)) {
+      m_dpadHeld.add(activeId);
+      MobileTouchAction action = dpadAction(*element, direction);
+      setAction(action, true);
+      if (action.kind == MobileTouchActionKind::MouseWheelUp || action.kind == MobileTouchActionKind::MouseWheelDown)
+        m_nextDPadWheelMs[activeId] = Time::monotonicMilliseconds() + 180;
+    }
+  }
+
+  void clearDPad(String const& elementId) {
+    if (auto element = findElement(elementId)) {
+      for (auto const& candidate : {"up", "down", "left", "right"}) {
+        String id = elementId + ":" + candidate;
+        if (m_dpadHeld.contains(id)) {
+          m_dpadHeld.remove(id);
+          setAction(dpadAction(*element, candidate), false);
+        }
+      }
+    }
+  }
+
+  void repeatDPadWheelActions() {
+    int64_t now = Time::monotonicMilliseconds();
+    for (auto const& held : m_dpadHeld.values()) {
+      auto next = m_nextDPadWheelMs.value(held, 0);
+      if (next > now)
+        continue;
+
+      auto pieces = held.split(":");
+      if (pieces.size() != 2)
+        continue;
+      if (auto element = findElement(pieces[0])) {
+        MobileTouchAction action = dpadAction(*element, pieces[1]);
+        if (action.kind == MobileTouchActionKind::MouseWheelUp || action.kind == MobileTouchActionKind::MouseWheelDown) {
+          setAction(action, true);
+          m_nextDPadWheelMs[held] = now + 130;
+        }
+      }
+    }
   }
 
   void emitActionEdges() {
@@ -590,10 +891,7 @@ private:
     setActionKey(m_moveVec[0] < -0.30f, Key::A, m_leftHeld);
     setActionKey(m_moveVec[1] < -0.30f, Key::W, m_upHeld);
     setActionKey(m_moveVec[1] > 0.30f, Key::S, m_downHeld);
-    setActionKey(m_jumpHeld, Key::Space, m_jumpKeyHeld);
-    setActionKey(m_interactHeld, Key::E, m_interactKeyHeld);
-    setActionKey(m_pauseHeld, Key::Escape, m_pauseKeyHeld);
-    setActionKey(m_chatHeld, Key::Return, m_chatKeyHeld);
+    repeatDPadWheelActions();
 
     if (m_primaryHeld && !m_primaryMouseHeld && !m_secondaryMouseHeld) {
       m_primaryMouseHeld = true;
@@ -620,10 +918,10 @@ private:
     setActionKey(false, Key::A, m_leftHeld);
     setActionKey(false, Key::W, m_upHeld);
     setActionKey(false, Key::S, m_downHeld);
-    setActionKey(false, Key::Space, m_jumpKeyHeld);
-    setActionKey(false, Key::E, m_interactKeyHeld);
-    setActionKey(false, Key::Escape, m_pauseKeyHeld);
-    setActionKey(false, Key::Return, m_chatKeyHeld);
+    for (auto key : take(m_heldKeys))
+      emitEvent(KeyUpEvent{key});
+    m_heldElements.clear();
+    m_dpadHeld.clear();
 
     if (m_primaryMouseHeld) {
       m_primaryMouseHeld = false;
@@ -637,6 +935,27 @@ private:
     m_secondaryHeld = false;
     m_secondaryFinger = 0;
     m_primaryPausedForSecondary = false;
+  }
+
+  bool keyActionHeld(Key key) const {
+    return m_heldKeys.contains(key);
+  }
+
+  void setAction(MobileTouchAction const& action, bool desired) {
+    if (action.kind == MobileTouchActionKind::Key) {
+      bool held = keyActionHeld(action.key);
+      if (desired && !held) {
+        m_heldKeys.append(action.key);
+        emitEvent(KeyDownEvent{action.key, noMods()});
+      } else if (!desired && held) {
+        m_heldKeys.remove(action.key);
+        emitEvent(KeyUpEvent{action.key});
+      }
+    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
+      emitEvent(MouseWheelEvent{MouseWheel::Up, m_lastPointerInput});
+    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
+      emitEvent(MouseWheelEvent{MouseWheel::Down, m_lastPointerInput});
+    }
   }
 
   void emitMouseMove(Vec2F const& pos) {
@@ -667,25 +986,43 @@ private:
     draw->AddText(ImVec2(center.x - radius * 0.2f, center.y - radius * 0.35f), base, label);
   }
 
+  void drawDPad(ImDrawList* draw, ImVec2 center, float radius, String const& id, ImU32 base, ImU32 fill) const {
+    float arm = radius * 0.42f;
+    auto drawArm = [&](char const* suffix, ImVec2 c, char const* label) {
+      String heldId = id + ":" + suffix;
+      bool held = m_dpadHeld.contains(heldId);
+      draw->AddRect(ImVec2(c.x - arm, c.y - arm), ImVec2(c.x + arm, c.y + arm), base, arm * 0.25f, 0, 3.0f);
+      if (held)
+        draw->AddRectFilled(ImVec2(c.x - arm, c.y - arm), ImVec2(c.x + arm, c.y + arm), fill, arm * 0.25f);
+      draw->AddText(ImVec2(c.x - arm * 0.22f, c.y - arm * 0.38f), base, label);
+    };
+
+    drawArm("up", ImVec2(center.x, center.y - arm * 1.25f), "W");
+    drawArm("down", ImVec2(center.x, center.y + arm * 1.25f), "S");
+    drawArm("left", ImVec2(center.x - arm * 1.25f, center.y), "A");
+    drawArm("right", ImVec2(center.x + arm * 1.25f, center.y), "D");
+  }
+
   Vec2U* m_windowSize;
   [[maybe_unused]] float* m_displayScalePtr = nullptr;
   SafeAreaInsets* m_safeAreaPtr = nullptr;
   MobileTouchConfig m_config;
+  std::vector<MobileTouchElement> m_elements = defaultTouchElements();
   List<InputEvent> m_generatedEvents;
 
   StableHashMap<uint64_t, FingerState> m_fingers;
+  StringSet m_heldElements;
+  StringSet m_dpadHeld;
+  StringMap<int64_t> m_nextDPadWheelMs;
+  List<Key> m_heldKeys;
 
   bool m_joystickActive = false;
   uint64_t m_joystickFinger = 0;
   uint64_t m_aimFinger = 0;
+  String m_joystickElementId;
   Vec2F m_joystickOrigin;
   Vec2F m_joystickCurrent;
   Vec2F m_moveVec;
-
-  Vec2F m_jumpButtonCenter;
-  Vec2F m_interactButtonCenter;
-  Vec2F m_pauseButtonCenter;
-  Vec2F m_chatButtonCenter;
 
   bool m_primaryHeld = false;
   bool m_primaryMouseHeld = false;
@@ -696,20 +1033,12 @@ private:
   bool m_secondaryMouseHeld = false;
   uint64_t m_secondaryFinger = 0;
   Vec2F m_secondaryTouchPos;
-
-  bool m_jumpHeld = false;
-  bool m_interactHeld = false;
-  bool m_pauseHeld = false;
-  bool m_chatHeld = false;
+  Vec2F m_lastPointerInput;
 
   bool m_rightHeld = false;
   bool m_leftHeld = false;
   bool m_upHeld = false;
   bool m_downHeld = false;
-  bool m_jumpKeyHeld = false;
-  bool m_interactKeyHeld = false;
-  bool m_pauseKeyHeld = false;
-  bool m_chatKeyHeld = false;
 };
 
 class MobilePlatform {
@@ -1273,9 +1602,225 @@ private:
     state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
     state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
     state.touchConfig.deadzone = config.queryFloat("touch.deadzone", 0.15f);
+    state.touchElements = touchElementsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
     state.lastStatus = state.canLaunch ? "Using existing packed.pak" : "Please import packed.pak";
+  }
+
+  std::vector<pair<char const*, MobileTouchAction>> touchActionChoices() const {
+    return {
+      {"Jump / J (Space)", keyAction(Key::Space)},
+      {"Interact / E", keyAction(Key::E)},
+      {"Escape / Pause", keyAction(Key::Escape)},
+      {"Chat / T (Enter)", keyAction(Key::Return)},
+      {"Tech / F", keyAction(Key::F)},
+      {"Shift", keyAction(Key::LShift)},
+      {"Ctrl", keyAction(Key::LCtrl)},
+      {"Move Up / W", keyAction(Key::W)},
+      {"Move Down / S", keyAction(Key::S)},
+      {"Move Left / A", keyAction(Key::A)},
+      {"Move Right / D", keyAction(Key::D)},
+      {"Inventory / I", keyAction(Key::I)},
+      {"Codex / L", keyAction(Key::L)},
+      {"Quest / J", keyAction(Key::J)},
+      {"Crafting / C", keyAction(Key::C)},
+      {"Action Bar 1", keyAction(Key::One)},
+      {"Action Bar 2", keyAction(Key::Two)},
+      {"Action Bar 3", keyAction(Key::Three)},
+      {"Action Bar 4", keyAction(Key::Four)},
+      {"Action Bar 5", keyAction(Key::Five)},
+      {"Scroll Up", wheelAction(true)},
+      {"Scroll Down", wheelAction(false)}
+    };
+  }
+
+  int touchActionIndex(MobileTouchAction const& action) const {
+    auto choices = touchActionChoices();
+    for (size_t i = 0; i < choices.size(); ++i) {
+      auto const& candidate = choices[i].second;
+      if (candidate.kind == action.kind && candidate.key == action.key)
+        return (int)i;
+    }
+    return 0;
+  }
+
+  void renderTouchActionCombo(char const* label, MobileTouchAction& action) {
+    auto choices = touchActionChoices();
+    int index = touchActionIndex(action);
+    if (ImGui::BeginCombo(label, choices[index].first)) {
+      for (size_t i = 0; i < choices.size(); ++i) {
+        bool selected = index == (int)i;
+        if (ImGui::Selectable(choices[i].first, selected)) {
+          index = (int)i;
+          action = choices[i].second;
+        }
+        if (selected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+  }
+
+  void renderTouchElementPreview(LauncherState& state, ImDrawList* draw, ImVec2 canvasMin, ImVec2 canvasSize, int index) {
+    auto& element = state.touchElements[index];
+    if (!element.enabled)
+      return;
+
+    float baseRadius = std::min(canvasSize.x, canvasSize.y) * 0.075f * state.touchConfig.size;
+    float radius = baseRadius * std::clamp(element.size, 0.45f, 2.4f);
+    ImVec2 center(canvasMin.x + element.position[0] * canvasSize.x, canvasMin.y + element.position[1] * canvasSize.y);
+    ImU32 base = IM_COL32(255, 255, 255, (int)(210.0f * std::clamp(state.touchConfig.opacity, 0.0f, 1.0f)));
+    ImU32 fill = index == state.selectedTouchElement
+        ? IM_COL32(120, 190, 255, 120)
+        : IM_COL32(80, 160, 255, 70);
+
+    ImGui::SetCursorScreenPos(ImVec2(center.x - radius, center.y - radius));
+    ImGui::PushID(element.id.utf8Ptr());
+    ImGui::InvisibleButton("##touchControl", ImVec2(radius * 2.0f, radius * 2.0f));
+    if (ImGui::IsItemClicked())
+      state.selectedTouchElement = index;
+    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+      ImVec2 delta = ImGui::GetIO().MouseDelta;
+      element.position[0] = std::clamp(element.position[0] + delta.x / std::max(1.0f, canvasSize.x), 0.03f, 0.97f);
+      element.position[1] = std::clamp(element.position[1] + delta.y / std::max(1.0f, canvasSize.y), 0.03f, 0.97f);
+    }
+    ImGui::PopID();
+
+    if (element.kind == MobileTouchElementKind::DPad) {
+      float arm = radius * 0.38f;
+      draw->AddRectFilled(ImVec2(center.x - arm, center.y - radius), ImVec2(center.x + arm, center.y + radius), fill, arm * 0.2f);
+      draw->AddRectFilled(ImVec2(center.x - radius, center.y - arm), ImVec2(center.x + radius, center.y + arm), fill, arm * 0.2f);
+      draw->AddRect(ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius), base, arm * 0.25f, 0, 3.0f);
+      draw->AddText(ImVec2(center.x - radius * 0.38f, center.y - radius * 0.18f), base, "D-PAD");
+    } else if (element.kind == MobileTouchElementKind::Joystick) {
+      draw->AddCircle(center, radius, base, 48, 3.0f);
+      draw->AddCircleFilled(center, radius * 0.34f, fill, 32);
+    } else {
+      draw->AddCircleFilled(center, radius * 0.55f, fill, 32);
+      draw->AddCircle(center, radius * 0.55f, base, 48, 3.0f);
+      draw->AddText(ImVec2(center.x - radius * 0.22f, center.y - radius * 0.18f), base, element.label.utf8Ptr());
+    }
+  }
+
+  void renderTouchPreview(LauncherState& state, ImVec2 displaySize) {
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(displaySize, ImGuiCond_Always);
+    ImGui::Begin("Touch Layout Preview", nullptr,
+      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar);
+
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    ImVec2 min = ImGui::GetWindowPos();
+    draw->AddRectFilled(min, ImVec2(min.x + displaySize.x, min.y + displaySize.y), IM_COL32(15, 18, 24, 235));
+    for (int i = 0; i < (int)state.touchElements.size(); ++i)
+      renderTouchElementPreview(state, draw, min, displaySize, i);
+
+    ImGui::SetCursorScreenPos(ImVec2(min.x + 16.0f, min.y + 16.0f));
+    ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), 150.0f), true);
+    ImGui::Text("Touch Layout Preview");
+    if (state.selectedTouchElement >= 0 && state.selectedTouchElement < (int)state.touchElements.size()) {
+      auto& selected = state.touchElements[state.selectedTouchElement];
+      ImGui::Text("Selected: %s", selected.label.utf8Ptr());
+      ImGui::SliderFloat("Selected size", &selected.size, 0.45f, 2.4f);
+    }
+    if (ImGui::Button("Done"))
+      state.touchPreviewOpen = false;
+    ImGui::EndChild();
+    ImGui::End();
+  }
+
+  void renderTouchManager(LauncherState& state) {
+    ImGui::Text("Touch Controls Manager");
+    ImGui::Separator();
+    if (ImGui::Button("Back to Launcher"))
+      state.touchManagerOpen = false;
+    ImGui::SameLine();
+    if (ImGui::Button("Preview / Adjust Layout"))
+      state.touchPreviewOpen = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Save"))
+      persistLauncherState(state);
+
+    ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
+    ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
+    ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
+    ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
+
+    if (ImGui::Button("New Button")) {
+      state.newTouchButtonPopup = true;
+      state.newTouchActionIndex = 0;
+      state.newTouchButtonSize = 1.0f;
+      ImGui::OpenPopup("New Touch Button");
+    }
+
+    if (ImGui::BeginPopupModal("New Touch Button", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+      auto choices = touchActionChoices();
+      if (state.newTouchActionIndex < 0 || state.newTouchActionIndex >= (int)choices.size())
+        state.newTouchActionIndex = 0;
+      if (ImGui::BeginCombo("Interaction", choices[state.newTouchActionIndex].first)) {
+        for (int i = 0; i < (int)choices.size(); ++i) {
+          bool selected = state.newTouchActionIndex == i;
+          if (ImGui::Selectable(choices[i].first, selected))
+            state.newTouchActionIndex = i;
+          if (selected)
+            ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::SliderFloat("Button size", &state.newTouchButtonSize, 0.45f, 2.4f);
+      if (ImGui::Button("Create", ImVec2(140.0f, 0.0f))) {
+        auto action = choices[state.newTouchActionIndex].second;
+        MobileTouchElement element;
+        element.id = strf("custom{}", state.touchElements.size() + 1);
+        element.label = actionName(action);
+        element.kind = MobileTouchElementKind::Button;
+        element.enabled = true;
+        element.position = {0.50f, 0.50f};
+        element.size = state.newTouchButtonSize;
+        element.action = action;
+        state.touchElements.push_back(element);
+        state.selectedTouchElement = (int)state.touchElements.size() - 1;
+        state.touchPreviewOpen = true;
+        ImGui::CloseCurrentPopup();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f)))
+        ImGui::CloseCurrentPopup();
+      ImGui::EndPopup();
+    }
+
+    ImGui::Separator();
+    if (ImGui::BeginChild("TouchControlList", ImVec2(0, -70.0f), true)) {
+      for (int i = 0; i < (int)state.touchElements.size(); ++i) {
+        auto& element = state.touchElements[i];
+        ImGui::PushID(element.id.utf8Ptr());
+        ImGui::Checkbox("##enabled", &element.enabled);
+        ImGui::SameLine();
+        bool selected = state.selectedTouchElement == i;
+        if (ImGui::Selectable(element.label.utf8Ptr(), selected, ImGuiSelectableFlags_AllowItemOverlap))
+          state.selectedTouchElement = i;
+        if (selected) {
+          ImGui::Indent();
+          ImGui::SliderFloat("Size", &element.size, 0.45f, 2.4f);
+          float position[2] = {element.position[0], element.position[1]};
+          if (ImGui::SliderFloat2("Position", position, 0.03f, 0.97f))
+            element.position = {position[0], position[1]};
+          if (element.kind == MobileTouchElementKind::Button)
+            renderTouchActionCombo("Interaction", element.action);
+          else if (element.kind == MobileTouchElementKind::DPad) {
+            renderTouchActionCombo("Up", element.upAction);
+            renderTouchActionCombo("Down", element.downAction);
+            renderTouchActionCombo("Left", element.leftAction);
+            renderTouchActionCombo("Right", element.rightAction);
+          } else {
+            ImGui::TextDisabled("Joystick sends movement keys.");
+          }
+          ImGui::Unindent();
+        }
+        ImGui::PopID();
+      }
+    }
+    ImGui::EndChild();
   }
 
   bool runLauncher(LauncherState& state) {
@@ -1317,7 +1862,9 @@ private:
 
     bool launchPressed = false;
 
-    if (state.modManagerOpen) {
+    if (state.touchManagerOpen) {
+      renderTouchManager(state);
+    } else if (state.modManagerOpen) {
       if (state.modListDirty)
         refreshModList(state, modsPath);
 
@@ -1488,13 +2035,14 @@ private:
         state.modManagerOpen = true;
         state.modListDirty = true;
       }
+      ImGui::SameLine();
+      if (ImGui::Button("Touch Controls")) {
+        state.touchManagerOpen = true;
+        state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, (int)state.touchElements.size() - 1);
+      }
 
       ImGui::Separator();
-      ImGui::Text("Touch Controls");
-      ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
-      ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
-      ImGui::SliderFloat("Overlay size", &state.touchConfig.size, 0.6f, 1.8f);
-      ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
+      ImGui::Text("Touch Controls: %s", state.touchConfig.enabled ? "enabled" : "disabled");
 
       state.canLaunch = File::isFile(state.packedPakPath);
       if (!state.canLaunch)
@@ -1513,6 +2061,9 @@ private:
       ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", state.lastError.utf8Ptr());
 
     ImGui::End();
+
+    if (state.touchPreviewOpen)
+      renderTouchPreview(state, displaySize);
 
     ImGui::Render();
 #ifdef STAR_SYSTEM_IOS
@@ -1539,7 +2090,8 @@ private:
         {"enabled", state.touchConfig.enabled},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
-        {"deadzone", state.touchConfig.deadzone}
+        {"deadzone", state.touchConfig.deadzone},
+        {"elements", jsonFromTouchElements(state.touchElements)}
       }}
     };
 
@@ -1603,6 +2155,7 @@ private:
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
             {"deadzone", state.touchConfig.deadzone},
+            {"elements", jsonFromTouchElements(state.touchElements)},
             {"invertLook", false}
           }}
         }}
@@ -1722,6 +2275,7 @@ private:
         touch.size = cfg.queryFloat("touch.size", 1.0f);
         touch.deadzone = cfg.queryFloat("touch.deadzone", 0.15f);
         m_touchAdapter->setConfig(touch);
+        m_touchAdapter->setElements(touchElementsFromConfig(cfg));
       }
 
       if (m_softQuitRequested || m_quitRequested) {
