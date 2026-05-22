@@ -122,6 +122,7 @@ Maybe<Key> keyFromSdlKeyCode(SDL_Keycode sym) {
     case SDLK_S: return Key::S;
     case SDLK_D: return Key::D;
     case SDLK_E: return Key::E;
+    case SDLK_X: return Key::X;
     case SDLK_SPACE: return Key::Space;
     case SDLK_ESCAPE: return Key::Escape;
     case SDLK_RETURN: return Key::Return;
@@ -1652,6 +1653,7 @@ private:
       {"Escape / Pause", keyAction(Key::Escape)},
       {"Chat / T (Enter)", keyAction(Key::Return)},
       {"Tech / F", keyAction(Key::F)},
+      {"Swap Hotbar / X", keyAction(Key::X)},
       {"Shift", keyAction(Key::LShift)},
       {"Ctrl", keyAction(Key::LCtrl)},
       {"Move Up / W", keyAction(Key::W)},
