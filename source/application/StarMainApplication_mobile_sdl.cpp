@@ -29,6 +29,7 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <functional>
 #include <mutex>
@@ -100,6 +101,18 @@ static inline bool isTouchDerivedMouseEvent(SDL_Event const& event) {
   _unused(event);
 #endif
   return false;
+}
+
+static inline bool shouldCancelMobileTouchState(SDL_Event const& event) {
+  return event.type == SDL_EVENT_WINDOW_FOCUS_LOST
+      || event.type == SDL_EVENT_WINDOW_HIDDEN
+      || event.type == SDL_EVENT_WINDOW_MINIMIZED
+      || event.type == SDL_EVENT_WINDOW_RESIZED
+      || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
+      || event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED
+      || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED
+      || event.type == SDL_EVENT_WILL_ENTER_BACKGROUND
+      || event.type == SDL_EVENT_DID_ENTER_BACKGROUND;
 }
 
 Maybe<Key> keyFromSdlKeyCode(SDL_Keycode sym) {
@@ -366,6 +379,8 @@ struct LauncherState {
   bool touchManagerOpen = false;
   bool touchPreviewOpen = false;
   int selectedTouchElement = 0;
+  String touchLabelBufferElementId;
+  char touchLabelBuffer[64] = {};
   bool newTouchButtonPopup = false;
   int newTouchActionIndex = 0;
   float newTouchButtonSize = 1.0f;
@@ -390,13 +405,14 @@ public:
   }
 
   void setElements(std::vector<MobileTouchElement> elements) {
+    cancelAll();
     m_elements = std::move(elements);
   }
 
   void beginFrame() {
     m_generatedEvents.clear();
     if (!m_config.enabled)
-      clearActions();
+      cancelAll();
   }
 
   void endFrame() {
@@ -414,7 +430,8 @@ public:
 
     if (event.type != SDL_EVENT_FINGER_DOWN
         && event.type != SDL_EVENT_FINGER_UP
-        && event.type != SDL_EVENT_FINGER_MOTION) {
+        && event.type != SDL_EVENT_FINGER_MOTION
+        && event.type != SDL_EVENT_FINGER_CANCELED) {
       return false;
     }
 
@@ -425,10 +442,45 @@ public:
       assignFinger(finger, pos);
     else if (event.type == SDL_EVENT_FINGER_MOTION)
       updateFinger(finger, pos);
+    else if (event.type == SDL_EVENT_FINGER_CANCELED)
+      cancelFinger(finger);
     else
       releaseFinger(finger, pos);
 
     return true;
+  }
+
+  void cancelAll() {
+    for (auto const& pair : m_keyHoldCounts.pairs()) {
+      if (pair.second > 0)
+        emitEvent(KeyUpEvent{pair.first});
+    }
+
+    m_fingers.clear();
+    m_heldElements.clear();
+    m_dpadHeld.clear();
+    m_nextDPadWheelMs.clear();
+    m_keyActionOwners.clear();
+    m_keyHoldCounts.clear();
+
+    m_joystickActive = false;
+    m_joystickFinger = 0;
+    m_joystickElementId.clear();
+    m_moveVec = {};
+
+    if (m_primaryMouseHeld)
+      emitMouseUp(m_primaryTouchPos);
+    if (m_secondaryMouseHeld)
+      emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+
+    m_primaryHeld = false;
+    m_primaryMouseHeld = false;
+    m_aimFinger = 0;
+    m_primaryPausedForSecondary = false;
+
+    m_secondaryHeld = false;
+    m_secondaryMouseHeld = false;
+    m_secondaryFinger = 0;
   }
 
   void drawOverlay() {
@@ -630,8 +682,10 @@ private:
   }
 
   void assignFinger(uint64_t finger, Vec2F const& pos) {
-    if (m_fingers.contains(finger))
-      return;
+    if (auto old = m_fingers.ptr(finger)) {
+      Vec2F oldPos = old->currentPos;
+      releaseFinger(finger, oldPos, true);
+    }
 
     m_lastPointerInput = toInputSpace(pos);
     float radius = controlRadius();
@@ -653,7 +707,7 @@ private:
         state.elementId = element.id;
         state.action = element.action;
         m_heldElements.add(element.id);
-        setAction(element.action, true);
+        setAction(element.action, element.id, true);
         claimedControl = true;
         break;
       } else if (element.kind == MobileTouchElementKind::DPad && insideCircle(pos, center, elementRadius * 1.15f)) {
@@ -698,6 +752,11 @@ private:
       m_secondaryMouseHeld = true;
       emitMouseMove(m_secondaryTouchPos);
       emitMouseDown(m_secondaryTouchPos, MouseButton::Right);
+    } else if (m_primaryHeld) {
+      // A third touch should not steal ownership of the primary attack/aim
+      // button or synthesize a click while the primary button is still held.
+      state.role = FingerRole::SuppressedTap;
+      state.movedTooFarForTap = true;
     } else {
       state.role = FingerRole::Aim;
       m_aimFinger = finger;
@@ -745,12 +804,12 @@ private:
     }
   }
 
-  void releaseFinger(uint64_t finger, Vec2F const& pos) {
+  void releaseFinger(uint64_t finger, Vec2F const& pos, bool canceled = false) {
     auto ptr = m_fingers.ptr(finger);
     if (!ptr)
       return;
 
-    bool tap = isTap(*ptr, pos);
+    bool tap = !canceled && isTap(*ptr, pos);
 
     switch (ptr->role) {
       case FingerRole::Joystick:
@@ -796,7 +855,7 @@ private:
         break;
       case FingerRole::ActionButton:
         m_heldElements.remove(ptr->elementId);
-        setAction(ptr->action, false);
+        setAction(ptr->action, ptr->elementId, false);
         break;
       case FingerRole::DPad:
         clearDPad(ptr->elementId);
@@ -806,6 +865,11 @@ private:
     }
 
     m_fingers.remove(finger);
+  }
+
+  void cancelFinger(uint64_t finger) {
+    if (auto ptr = m_fingers.ptr(finger))
+      releaseFinger(finger, ptr->currentPos, true);
   }
 
   MobileTouchAction dpadAction(MobileTouchElement const& element, String const& direction) const {
@@ -841,14 +905,14 @@ private:
       String id = state.elementId + ":" + candidate;
       if (id != activeId && m_dpadHeld.contains(id)) {
         m_dpadHeld.remove(id);
-        setAction(dpadAction(*element, candidate), false);
+        setAction(dpadAction(*element, candidate), id, false);
       }
     }
 
     if (!activeId.empty() && !m_dpadHeld.contains(activeId)) {
       m_dpadHeld.add(activeId);
       MobileTouchAction action = dpadAction(*element, direction);
-      setAction(action, true);
+      setAction(action, activeId, true);
       if (action.kind == MobileTouchActionKind::MouseWheelUp || action.kind == MobileTouchActionKind::MouseWheelDown)
         m_nextDPadWheelMs[activeId] = Time::monotonicMilliseconds() + 180;
     }
@@ -860,7 +924,7 @@ private:
         String id = elementId + ":" + candidate;
         if (m_dpadHeld.contains(id)) {
           m_dpadHeld.remove(id);
-          setAction(dpadAction(*element, candidate), false);
+          setAction(dpadAction(*element, candidate), id, false);
         }
       }
     }
@@ -879,7 +943,7 @@ private:
       if (auto element = findElement(pieces[0])) {
         MobileTouchAction action = dpadAction(*element, pieces[1]);
         if (action.kind == MobileTouchActionKind::MouseWheelUp || action.kind == MobileTouchActionKind::MouseWheelDown) {
-          setAction(action, true);
+          setAction(action, held, true);
           m_nextDPadWheelMs[held] = now + 130;
         }
       }
@@ -887,10 +951,10 @@ private:
   }
 
   void emitActionEdges() {
-    setActionKey(m_moveVec[0] > 0.30f, Key::D, m_rightHeld);
-    setActionKey(m_moveVec[0] < -0.30f, Key::A, m_leftHeld);
-    setActionKey(m_moveVec[1] < -0.30f, Key::W, m_upHeld);
-    setActionKey(m_moveVec[1] > 0.30f, Key::S, m_downHeld);
+    setKeyOwner("joystick:right", Key::D, m_moveVec[0] > 0.30f);
+    setKeyOwner("joystick:left", Key::A, m_moveVec[0] < -0.30f);
+    setKeyOwner("joystick:up", Key::W, m_moveVec[1] < -0.30f);
+    setKeyOwner("joystick:down", Key::S, m_moveVec[1] > 0.30f);
     repeatDPadWheelActions();
 
     if (m_primaryHeld && !m_primaryMouseHeld && !m_secondaryMouseHeld) {
@@ -903,54 +967,30 @@ private:
     }
   }
 
-  void setActionKey(bool desired, Key key, bool& held) {
-    if (desired && !held) {
-      held = true;
-      emitEvent(KeyDownEvent{key, noMods()});
-    } else if (!desired && held) {
-      held = false;
-      emitEvent(KeyUpEvent{key});
-    }
-  }
+  void setKeyOwner(String const& owner, Key key, bool desired) {
+    String token = owner + ":" + KeyNames.getRight(key);
 
-  void clearActions() {
-    setActionKey(false, Key::D, m_rightHeld);
-    setActionKey(false, Key::A, m_leftHeld);
-    setActionKey(false, Key::W, m_upHeld);
-    setActionKey(false, Key::S, m_downHeld);
-    for (auto key : take(m_heldKeys))
-      emitEvent(KeyUpEvent{key});
-    m_heldElements.clear();
-    m_dpadHeld.clear();
-
-    if (m_primaryMouseHeld) {
-      m_primaryMouseHeld = false;
-      emitMouseUp(m_primaryTouchPos);
-    }
-    if (m_secondaryMouseHeld) {
-      m_secondaryMouseHeld = false;
-      emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
-    }
-
-    m_secondaryHeld = false;
-    m_secondaryFinger = 0;
-    m_primaryPausedForSecondary = false;
-  }
-
-  bool keyActionHeld(Key key) const {
-    return m_heldKeys.contains(key);
-  }
-
-  void setAction(MobileTouchAction const& action, bool desired) {
-    if (action.kind == MobileTouchActionKind::Key) {
-      bool held = keyActionHeld(action.key);
-      if (desired && !held) {
-        m_heldKeys.append(action.key);
-        emitEvent(KeyDownEvent{action.key, noMods()});
-      } else if (!desired && held) {
-        m_heldKeys.remove(action.key);
-        emitEvent(KeyUpEvent{action.key});
+    if (desired && !m_keyActionOwners.contains(token)) {
+      m_keyActionOwners.add(token);
+      unsigned count = m_keyHoldCounts.value(key, 0);
+      m_keyHoldCounts.set(key, count + 1);
+      if (count == 0)
+        emitEvent(KeyDownEvent{key, noMods()});
+    } else if (!desired && m_keyActionOwners.contains(token)) {
+      m_keyActionOwners.remove(token);
+      unsigned count = m_keyHoldCounts.value(key, 0);
+      if (count <= 1) {
+        m_keyHoldCounts.remove(key);
+        emitEvent(KeyUpEvent{key});
+      } else {
+        m_keyHoldCounts.set(key, count - 1);
       }
+    }
+  }
+
+  void setAction(MobileTouchAction const& action, String const& owner, bool desired) {
+    if (action.kind == MobileTouchActionKind::Key) {
+      setKeyOwner(owner, action.key, desired);
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
       emitEvent(MouseWheelEvent{MouseWheel::Up, m_lastPointerInput});
     } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
@@ -1014,7 +1054,8 @@ private:
   StringSet m_heldElements;
   StringSet m_dpadHeld;
   StringMap<int64_t> m_nextDPadWheelMs;
-  List<Key> m_heldKeys;
+  StringSet m_keyActionOwners;
+  HashMap<Key, unsigned> m_keyHoldCounts;
 
   bool m_joystickActive = false;
   uint64_t m_joystickFinger = 0;
@@ -1035,10 +1076,6 @@ private:
   Vec2F m_secondaryTouchPos;
   Vec2F m_lastPointerInput;
 
-  bool m_rightHeld = false;
-  bool m_leftHeld = false;
-  bool m_upHeld = false;
-  bool m_downHeld = false;
 };
 
 class MobilePlatform {
@@ -1797,10 +1834,19 @@ private:
         ImGui::Checkbox("##enabled", &element.enabled);
         ImGui::SameLine();
         bool selected = state.selectedTouchElement == i;
-        if (ImGui::Selectable(element.label.utf8Ptr(), selected, ImGuiSelectableFlags_AllowItemOverlap))
+        String listLabel = element.label.empty() ? String("(blank)") : element.label;
+        if (ImGui::Selectable(listLabel.utf8Ptr(), selected, ImGuiSelectableFlags_AllowItemOverlap))
           state.selectedTouchElement = i;
         if (selected) {
           ImGui::Indent();
+          if (state.touchLabelBufferElementId != element.id) {
+            state.touchLabelBufferElementId = element.id;
+            std::snprintf(state.touchLabelBuffer, sizeof(state.touchLabelBuffer), "%s", element.label.utf8Ptr());
+          }
+          if (element.kind == MobileTouchElementKind::Button) {
+            if (ImGui::InputText("Displayed text", state.touchLabelBuffer, sizeof(state.touchLabelBuffer)))
+              element.label = String(state.touchLabelBuffer).trim();
+          }
           ImGui::SliderFloat("Size", &element.size, 0.45f, 2.4f);
           float position[2] = {element.position[0], element.position[1]};
           if (ImGui::SliderFloat2("Position", position, 0.03f, 0.97f))
@@ -2064,6 +2110,8 @@ private:
 
     if (state.touchPreviewOpen)
       renderTouchPreview(state, displaySize);
+
+    syncImGuiTextInputState();
 
     ImGui::Render();
 #ifdef STAR_SYSTEM_IOS
@@ -2433,7 +2481,8 @@ private:
       bool touchDerivedMouse = overlayEnabled && isTouchDerivedMouseEvent(event);
       if (event.type != SDL_EVENT_FINGER_DOWN
           && event.type != SDL_EVENT_FINGER_UP
-          && event.type != SDL_EVENT_FINGER_MOTION) {
+          && event.type != SDL_EVENT_FINGER_MOTION
+          && event.type != SDL_EVENT_FINGER_CANCELED) {
         convertEventToRenderCoordinatesIfPossible(m_window, &event);
       }
       if (overlayEnabled && !touchDerivedMouse)
@@ -2453,14 +2502,21 @@ private:
       if (event.type == SDL_EVENT_WINDOW_RESIZED
           || event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
           || event.type == SDL_EVENT_WINDOW_SAFE_AREA_CHANGED) {
+        if (m_touchAdapter)
+          m_touchAdapter->cancelAll();
         syncWindowMetrics(true);
         continue;
       }
 
       if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED) {
+        if (m_touchAdapter)
+          m_touchAdapter->cancelAll();
         syncWindowMetrics(true);
         continue;
       }
+
+      if (overlayEnabled && shouldCancelMobileTouchState(event))
+        m_touchAdapter->cancelAll();
 
       if (m_touchAdapter->processSdlEvent(event))
         continue;
@@ -2697,6 +2753,17 @@ private:
 
     m_textInputApplied = m_textInput;
     m_textInputDirty = false;
+#endif
+  }
+
+  void syncImGuiTextInputState() {
+#if defined(STAR_SYSTEM_ANDROID) || defined(STAR_SYSTEM_IOS)
+    bool wantTextInput = ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput;
+    if (m_textInput != wantTextInput) {
+      m_textInput = wantTextInput;
+      m_textInputDirty = true;
+    }
+    syncTextInputState();
 #endif
   }
 
