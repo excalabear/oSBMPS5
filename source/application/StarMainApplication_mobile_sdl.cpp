@@ -27,6 +27,7 @@ extern "C" int  StarIosBridge_getInterfaceOrientation();
 #include "imgui_impl_sdl3.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -228,24 +229,278 @@ static inline bool shouldCancelMobileTouchState(SDL_Event const& event) {
 }
 
 Maybe<Key> keyFromSdlKeyCode(SDL_Keycode sym) {
-  switch (sym) {
-    case SDLK_W: return Key::W;
-    case SDLK_A: return Key::A;
-    case SDLK_S: return Key::S;
-    case SDLK_D: return Key::D;
-    case SDLK_E: return Key::E;
-    case SDLK_X: return Key::X;
-    case SDLK_SPACE: return Key::Space;
-    case SDLK_ESCAPE: return Key::Escape;
-    case SDLK_RETURN: return Key::Return;
-    case SDLK_TAB: return Key::Tab;
-    case SDLK_BACKSPACE: return Key::Backspace;
-    case SDLK_UP: return Key::Up;
-    case SDLK_DOWN: return Key::Down;
-    case SDLK_LEFT: return Key::Left;
-    case SDLK_RIGHT: return Key::Right;
-    default: return {};
-  }
+  static HashMap<int, Key> KeyCodeMap{
+    {SDLK_BACKSPACE, Key::Backspace},
+    {SDLK_TAB, Key::Tab},
+    {SDLK_CLEAR, Key::Clear},
+    {SDLK_RETURN, Key::Return},
+    {SDLK_PAUSE, Key::Pause},
+    {SDLK_ESCAPE, Key::Escape},
+    {SDLK_SPACE, Key::Space},
+    {SDLK_EXCLAIM, Key::Exclaim},
+    {SDLK_DBLAPOSTROPHE, Key::QuotedBL},
+    {SDLK_HASH, Key::Hash},
+    {SDLK_DOLLAR, Key::Dollar},
+    {SDLK_AMPERSAND, Key::Ampersand},
+    {SDLK_APOSTROPHE, Key::Quote},
+    {SDLK_LEFTPAREN, Key::LeftParen},
+    {SDLK_RIGHTPAREN, Key::RightParen},
+    {SDLK_ASTERISK, Key::Asterisk},
+    {SDLK_PLUS, Key::Plus},
+    {SDLK_COMMA, Key::Comma},
+    {SDLK_MINUS, Key::Minus},
+    {SDLK_PERIOD, Key::Period},
+    {SDLK_SLASH, Key::Slash},
+    {SDLK_0, Key::Zero},
+    {SDLK_1, Key::One},
+    {SDLK_2, Key::Two},
+    {SDLK_3, Key::Three},
+    {SDLK_4, Key::Four},
+    {SDLK_5, Key::Five},
+    {SDLK_6, Key::Six},
+    {SDLK_7, Key::Seven},
+    {SDLK_8, Key::Eight},
+    {SDLK_9, Key::Nine},
+    {SDLK_COLON, Key::Colon},
+    {SDLK_SEMICOLON, Key::Semicolon},
+    {SDLK_LESS, Key::Less},
+    {SDLK_EQUALS, Key::Equals},
+    {SDLK_GREATER, Key::Greater},
+    {SDLK_QUESTION, Key::Question},
+    {SDLK_AT, Key::At},
+    {SDLK_LEFTBRACKET, Key::LeftBracket},
+    {SDLK_BACKSLASH, Key::Backslash},
+    {SDLK_RIGHTBRACKET, Key::RightBracket},
+    {SDLK_CARET, Key::Caret},
+    {SDLK_UNDERSCORE, Key::Underscore},
+    {SDLK_GRAVE, Key::Backquote},
+    {SDLK_A, Key::A},
+    {SDLK_B, Key::B},
+    {SDLK_C, Key::C},
+    {SDLK_D, Key::D},
+    {SDLK_E, Key::E},
+    {SDLK_F, Key::F},
+    {SDLK_G, Key::G},
+    {SDLK_H, Key::H},
+    {SDLK_I, Key::I},
+    {SDLK_J, Key::J},
+    {SDLK_K, Key::K},
+    {SDLK_L, Key::L},
+    {SDLK_M, Key::M},
+    {SDLK_N, Key::N},
+    {SDLK_O, Key::O},
+    {SDLK_P, Key::P},
+    {SDLK_Q, Key::Q},
+    {SDLK_R, Key::R},
+    {SDLK_S, Key::S},
+    {SDLK_T, Key::T},
+    {SDLK_U, Key::U},
+    {SDLK_V, Key::V},
+    {SDLK_W, Key::W},
+    {SDLK_X, Key::X},
+    {SDLK_Y, Key::Y},
+    {SDLK_Z, Key::Z},
+    {SDLK_DELETE, Key::Delete},
+    {SDLK_KP_0, Key::Keypad0},
+    {SDLK_KP_1, Key::Keypad1},
+    {SDLK_KP_2, Key::Keypad2},
+    {SDLK_KP_3, Key::Keypad3},
+    {SDLK_KP_4, Key::Keypad4},
+    {SDLK_KP_5, Key::Keypad5},
+    {SDLK_KP_6, Key::Keypad6},
+    {SDLK_KP_7, Key::Keypad7},
+    {SDLK_KP_8, Key::Keypad8},
+    {SDLK_KP_9, Key::Keypad9},
+    {SDLK_KP_PERIOD, Key::KeypadPeriod},
+    {SDLK_KP_DIVIDE, Key::KeypadDivide},
+    {SDLK_KP_MULTIPLY, Key::KeypadMultiply},
+    {SDLK_KP_MINUS, Key::KeypadMinus},
+    {SDLK_KP_PLUS, Key::KeypadPlus},
+    {SDLK_KP_ENTER, Key::KeypadEnter},
+    {SDLK_KP_EQUALS, Key::KeypadEquals},
+    {SDLK_UP, Key::Up},
+    {SDLK_DOWN, Key::Down},
+    {SDLK_RIGHT, Key::Right},
+    {SDLK_LEFT, Key::Left},
+    {SDLK_INSERT, Key::Insert},
+    {SDLK_HOME, Key::Home},
+    {SDLK_END, Key::End},
+    {SDLK_PAGEUP, Key::PageUp},
+    {SDLK_PAGEDOWN, Key::PageDown},
+    {SDLK_F1, Key::F1},
+    {SDLK_F2, Key::F2},
+    {SDLK_F3, Key::F3},
+    {SDLK_F4, Key::F4},
+    {SDLK_F5, Key::F5},
+    {SDLK_F6, Key::F6},
+    {SDLK_F7, Key::F7},
+    {SDLK_F8, Key::F8},
+    {SDLK_F9, Key::F9},
+    {SDLK_F10, Key::F10},
+    {SDLK_F11, Key::F11},
+    {SDLK_F12, Key::F12},
+    {SDLK_F13, Key::F13},
+    {SDLK_F14, Key::F14},
+    {SDLK_F15, Key::F15},
+    {SDLK_F16, Key::F16},
+    {SDLK_F17, Key::F17},
+    {SDLK_F18, Key::F18},
+    {SDLK_F19, Key::F19},
+    {SDLK_F20, Key::F20},
+    {SDLK_F21, Key::F21},
+    {SDLK_F22, Key::F22},
+    {SDLK_F23, Key::F23},
+    {SDLK_F24, Key::F24},
+    {SDLK_NUMLOCKCLEAR, Key::NumLock},
+    {SDLK_CAPSLOCK, Key::CapsLock},
+    {SDLK_SCROLLLOCK, Key::ScrollLock},
+    {SDLK_RSHIFT, Key::RShift},
+    {SDLK_LSHIFT, Key::LShift},
+    {SDLK_RCTRL, Key::RCtrl},
+    {SDLK_LCTRL, Key::LCtrl},
+    {SDLK_RALT, Key::RAlt},
+    {SDLK_LALT, Key::LAlt},
+    {SDLK_RGUI, Key::RGui},
+    {SDLK_LGUI, Key::LGui},
+    {SDLK_MODE, Key::AltGr},
+    {SDLK_APPLICATION, Key::Compose},
+    {SDLK_HELP, Key::Help},
+    {SDLK_PRINTSCREEN, Key::PrintScreen},
+    {SDLK_SYSREQ, Key::SysReq},
+    {SDLK_MENU, Key::Menu},
+    {SDLK_POWER, Key::Power}
+  };
+
+  return KeyCodeMap.maybe(sym);
+}
+
+Maybe<Key> keyFromSdlScancode(SDL_Scancode scancode) {
+  static HashMap<int, Key> ScanCodeMap{
+    {SDL_SCANCODE_A, Key::A},
+    {SDL_SCANCODE_B, Key::B},
+    {SDL_SCANCODE_C, Key::C},
+    {SDL_SCANCODE_D, Key::D},
+    {SDL_SCANCODE_E, Key::E},
+    {SDL_SCANCODE_F, Key::F},
+    {SDL_SCANCODE_G, Key::G},
+    {SDL_SCANCODE_H, Key::H},
+    {SDL_SCANCODE_I, Key::I},
+    {SDL_SCANCODE_J, Key::J},
+    {SDL_SCANCODE_K, Key::K},
+    {SDL_SCANCODE_L, Key::L},
+    {SDL_SCANCODE_M, Key::M},
+    {SDL_SCANCODE_N, Key::N},
+    {SDL_SCANCODE_O, Key::O},
+    {SDL_SCANCODE_P, Key::P},
+    {SDL_SCANCODE_Q, Key::Q},
+    {SDL_SCANCODE_R, Key::R},
+    {SDL_SCANCODE_S, Key::S},
+    {SDL_SCANCODE_T, Key::T},
+    {SDL_SCANCODE_U, Key::U},
+    {SDL_SCANCODE_V, Key::V},
+    {SDL_SCANCODE_W, Key::W},
+    {SDL_SCANCODE_X, Key::X},
+    {SDL_SCANCODE_Y, Key::Y},
+    {SDL_SCANCODE_Z, Key::Z},
+    {SDL_SCANCODE_0, Key::Zero},
+    {SDL_SCANCODE_1, Key::One},
+    {SDL_SCANCODE_2, Key::Two},
+    {SDL_SCANCODE_3, Key::Three},
+    {SDL_SCANCODE_4, Key::Four},
+    {SDL_SCANCODE_5, Key::Five},
+    {SDL_SCANCODE_6, Key::Six},
+    {SDL_SCANCODE_7, Key::Seven},
+    {SDL_SCANCODE_8, Key::Eight},
+    {SDL_SCANCODE_9, Key::Nine},
+    {SDL_SCANCODE_MINUS, Key::Minus},
+    {SDL_SCANCODE_EQUALS, Key::Equals},
+    {SDL_SCANCODE_LEFTBRACKET, Key::LeftBracket},
+    {SDL_SCANCODE_RIGHTBRACKET, Key::RightBracket},
+    {SDL_SCANCODE_BACKSLASH, Key::Backslash},
+    {SDL_SCANCODE_SEMICOLON, Key::Semicolon},
+    {SDL_SCANCODE_APOSTROPHE, Key::Quote},
+    {SDL_SCANCODE_GRAVE, Key::Backquote},
+    {SDL_SCANCODE_COMMA, Key::Comma},
+    {SDL_SCANCODE_PERIOD, Key::Period},
+    {SDL_SCANCODE_SLASH, Key::Slash},
+    {SDL_SCANCODE_BACKSPACE, Key::Backspace},
+    {SDL_SCANCODE_TAB, Key::Tab},
+    {SDL_SCANCODE_RETURN, Key::Return},
+    {SDL_SCANCODE_ESCAPE, Key::Escape},
+    {SDL_SCANCODE_SPACE, Key::Space},
+    {SDL_SCANCODE_DELETE, Key::Delete},
+    {SDL_SCANCODE_INSERT, Key::Insert},
+    {SDL_SCANCODE_HOME, Key::Home},
+    {SDL_SCANCODE_END, Key::End},
+    {SDL_SCANCODE_PAGEUP, Key::PageUp},
+    {SDL_SCANCODE_PAGEDOWN, Key::PageDown},
+    {SDL_SCANCODE_UP, Key::Up},
+    {SDL_SCANCODE_DOWN, Key::Down},
+    {SDL_SCANCODE_LEFT, Key::Left},
+    {SDL_SCANCODE_RIGHT, Key::Right},
+    {SDL_SCANCODE_F1, Key::F1},
+    {SDL_SCANCODE_F2, Key::F2},
+    {SDL_SCANCODE_F3, Key::F3},
+    {SDL_SCANCODE_F4, Key::F4},
+    {SDL_SCANCODE_F5, Key::F5},
+    {SDL_SCANCODE_F6, Key::F6},
+    {SDL_SCANCODE_F7, Key::F7},
+    {SDL_SCANCODE_F8, Key::F8},
+    {SDL_SCANCODE_F9, Key::F9},
+    {SDL_SCANCODE_F10, Key::F10},
+    {SDL_SCANCODE_F11, Key::F11},
+    {SDL_SCANCODE_F12, Key::F12},
+    {SDL_SCANCODE_F13, Key::F13},
+    {SDL_SCANCODE_F14, Key::F14},
+    {SDL_SCANCODE_F15, Key::F15},
+    {SDL_SCANCODE_F16, Key::F16},
+    {SDL_SCANCODE_F17, Key::F17},
+    {SDL_SCANCODE_F18, Key::F18},
+    {SDL_SCANCODE_F19, Key::F19},
+    {SDL_SCANCODE_F20, Key::F20},
+    {SDL_SCANCODE_F21, Key::F21},
+    {SDL_SCANCODE_F22, Key::F22},
+    {SDL_SCANCODE_F23, Key::F23},
+    {SDL_SCANCODE_F24, Key::F24},
+    {SDL_SCANCODE_KP_0, Key::Keypad0},
+    {SDL_SCANCODE_KP_1, Key::Keypad1},
+    {SDL_SCANCODE_KP_2, Key::Keypad2},
+    {SDL_SCANCODE_KP_3, Key::Keypad3},
+    {SDL_SCANCODE_KP_4, Key::Keypad4},
+    {SDL_SCANCODE_KP_5, Key::Keypad5},
+    {SDL_SCANCODE_KP_6, Key::Keypad6},
+    {SDL_SCANCODE_KP_7, Key::Keypad7},
+    {SDL_SCANCODE_KP_8, Key::Keypad8},
+    {SDL_SCANCODE_KP_9, Key::Keypad9},
+    {SDL_SCANCODE_KP_PERIOD, Key::KeypadPeriod},
+    {SDL_SCANCODE_KP_DIVIDE, Key::KeypadDivide},
+    {SDL_SCANCODE_KP_MULTIPLY, Key::KeypadMultiply},
+    {SDL_SCANCODE_KP_MINUS, Key::KeypadMinus},
+    {SDL_SCANCODE_KP_PLUS, Key::KeypadPlus},
+    {SDL_SCANCODE_KP_ENTER, Key::KeypadEnter},
+    {SDL_SCANCODE_KP_EQUALS, Key::KeypadEquals},
+    {SDL_SCANCODE_LCTRL, Key::LCtrl},
+    {SDL_SCANCODE_RCTRL, Key::RCtrl},
+    {SDL_SCANCODE_LSHIFT, Key::LShift},
+    {SDL_SCANCODE_RSHIFT, Key::RShift},
+    {SDL_SCANCODE_LALT, Key::LAlt},
+    {SDL_SCANCODE_RALT, Key::RAlt},
+    {SDL_SCANCODE_LGUI, Key::LGui},
+    {SDL_SCANCODE_RGUI, Key::RGui},
+    {SDL_SCANCODE_MODE, Key::AltGr},
+    {SDL_SCANCODE_CAPSLOCK, Key::CapsLock},
+    {SDL_SCANCODE_NUMLOCKCLEAR, Key::NumLock},
+    {SDL_SCANCODE_SCROLLLOCK, Key::ScrollLock},
+    {SDL_SCANCODE_PRINTSCREEN, Key::PrintScreen},
+    {SDL_SCANCODE_PAUSE, Key::Pause},
+    {SDL_SCANCODE_MENU, Key::Menu},
+    {SDL_SCANCODE_APPLICATION, Key::Compose},
+    {SDL_SCANCODE_POWER, Key::Power},
+    {SDL_SCANCODE_HELP, Key::Help},
+    {SDL_SCANCODE_SYSREQ, Key::SysReq}
+  };
+
+  return ScanCodeMap.maybe(scancode);
 }
 
 MouseButton mouseButtonFromSdlMouseButton(uint8_t button) {
@@ -294,6 +549,7 @@ KeyMod noMods() {
 
 struct MobileTouchConfig {
   bool enabled = true;
+  bool directTouchGestures = true;
   float opacity = 0.35f;
   float size = 1.0f;
   float deadzone = 0.15f;
@@ -301,20 +557,32 @@ struct MobileTouchConfig {
 
 enum class MobileTouchElementKind {
   Joystick,
+  AimJoystick,
   Button,
   DPad
 };
 
 enum class MobileTouchActionKind {
   Key,
+  KeyMacro,
+  MouseButton,
   MouseWheelUp,
   MouseWheelDown,
   None
 };
 
+enum class MobileTouchPressMode {
+  SinglePress,
+  Repeat,
+  Hold,
+  Toggle
+};
+
 struct MobileTouchAction {
   MobileTouchActionKind kind = MobileTouchActionKind::Key;
   Key key = Key::Space;
+  MouseButton mouseButton = MouseButton::Left;
+  List<Key> keys;
 };
 
 struct MobileTouchElement {
@@ -329,12 +597,27 @@ struct MobileTouchElement {
   MobileTouchAction downAction;
   MobileTouchAction leftAction;
   MobileTouchAction rightAction;
+  MobileTouchPressMode pressMode = MobileTouchPressMode::Hold;
+  float aimSensitivity = 1.0f;
 };
+
+static String keysName(List<Key> const& keys) {
+  StringList keyNames;
+  for (auto key : keys)
+    keyNames.append(KeyNames.getRight(key));
+  return keyNames.join("+");
+}
 
 static String actionName(MobileTouchAction const& action) {
   switch (action.kind) {
     case MobileTouchActionKind::Key:
       return KeyNames.getRight(action.key);
+    case MobileTouchActionKind::KeyMacro:
+      return action.keys.empty() ? "Macro" : keysName(action.keys);
+    case MobileTouchActionKind::MouseButton:
+      return action.mouseButton == MouseButton::Left ? "Left Mouse"
+          : action.mouseButton == MouseButton::Right ? "Right Mouse"
+          : MouseButtonNames.getRight(action.mouseButton);
     case MobileTouchActionKind::MouseWheelUp:
       return "Scroll Up";
     case MobileTouchActionKind::MouseWheelDown:
@@ -351,15 +634,63 @@ static MobileTouchAction keyAction(Key key) {
   return action;
 }
 
+static MobileTouchAction macroAction(List<Key> keys) {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::KeyMacro;
+  action.keys = std::move(keys);
+  return action;
+}
+
+static MobileTouchAction mouseAction(MouseButton button) {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::MouseButton;
+  action.mouseButton = button;
+  return action;
+}
+
 static MobileTouchAction wheelAction(bool up) {
   MobileTouchAction action;
   action.kind = up ? MobileTouchActionKind::MouseWheelUp : MobileTouchActionKind::MouseWheelDown;
   return action;
 }
 
+static MobileTouchAction noneAction() {
+  MobileTouchAction action;
+  action.kind = MobileTouchActionKind::None;
+  return action;
+}
+
+static String pressModeName(MobileTouchPressMode mode) {
+  switch (mode) {
+    case MobileTouchPressMode::SinglePress:
+      return "single";
+    case MobileTouchPressMode::Repeat:
+      return "repeat";
+    case MobileTouchPressMode::Toggle:
+      return "toggle";
+    default:
+      return "hold";
+  }
+}
+
+static MobileTouchPressMode pressModeFromName(String const& name, MobileTouchPressMode def = MobileTouchPressMode::Hold) {
+  if (name.equals("single", String::CaseInsensitive) || name.equals("singlePress", String::CaseInsensitive))
+    return MobileTouchPressMode::SinglePress;
+  if (name.equals("repeat", String::CaseInsensitive) || name.equals("rapidFire", String::CaseInsensitive))
+    return MobileTouchPressMode::Repeat;
+  if (name.equals("toggle", String::CaseInsensitive))
+    return MobileTouchPressMode::Toggle;
+  if (name.equals("hold", String::CaseInsensitive))
+    return MobileTouchPressMode::Hold;
+  return def;
+}
+
 static std::vector<MobileTouchElement> defaultTouchElements() {
   return {
     {"joystick", "Joystick", MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
+    {"aimJoystick", "Aim", MobileTouchElementKind::AimJoystick, false, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
+    {"leftHand", "L", MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
+    {"rightHand", "R", MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
     {"jump", "J", MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
     {"interact", "E", MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
     {"pause", "ESC", MobileTouchElementKind::Button, true, {0.10f, 0.15f}, 0.96f, keyAction(Key::Escape), {}, {}, {}, {}},
@@ -376,6 +707,8 @@ static String elementKindName(MobileTouchElementKind kind) {
   switch (kind) {
     case MobileTouchElementKind::Joystick:
       return "joystick";
+    case MobileTouchElementKind::AimJoystick:
+      return "aimJoystick";
     case MobileTouchElementKind::DPad:
       return "dpad";
     default:
@@ -386,12 +719,56 @@ static String elementKindName(MobileTouchElementKind kind) {
 static MobileTouchElementKind elementKindFromName(String const& name) {
   if (name.equals("joystick", String::CaseInsensitive))
     return MobileTouchElementKind::Joystick;
+  if (name.equals("aimJoystick", String::CaseInsensitive) || name.equals("aim", String::CaseInsensitive))
+    return MobileTouchElementKind::AimJoystick;
   if (name.equals("dpad", String::CaseInsensitive))
     return MobileTouchElementKind::DPad;
   return MobileTouchElementKind::Button;
 }
 
+static List<Key> keysFromTouchAction(MobileTouchAction const& action) {
+  if (action.kind == MobileTouchActionKind::Key)
+    return {action.key};
+  if (action.kind == MobileTouchActionKind::KeyMacro)
+    return action.keys;
+  return {};
+}
+
+static JsonArray jsonFromKeys(List<Key> const& keys) {
+  JsonArray out;
+  for (auto key : keys)
+    out.append(KeyNames.getRight(key));
+  return out;
+}
+
+static List<Key> keysFromText(String const& text) {
+  List<Key> keys;
+  for (auto const& rawToken : text.replace("+", " ").replace(",", " ").replace(";", " ").splitWhitespace()) {
+    auto token = rawToken.trim();
+    if (token.empty())
+      continue;
+    if (auto key = KeyNames.maybeLeft(token))
+      keys.append(*key);
+  }
+  return keys;
+}
+
+static List<Key> keysFromJson(Json const& json) {
+  List<Key> keys;
+  if (auto array = json.optArray("keys")) {
+    for (auto const& keyJson : *array) {
+      if (auto key = KeyNames.maybeLeft(keyJson.toString()))
+        keys.append(*key);
+    }
+  }
+  return keys;
+}
+
 static Json jsonFromTouchAction(MobileTouchAction const& action) {
+  if (action.kind == MobileTouchActionKind::KeyMacro)
+    return JsonObject{{"type", "keys"}, {"keys", jsonFromKeys(action.keys)}};
+  if (action.kind == MobileTouchActionKind::MouseButton)
+    return JsonObject{{"type", "mouse"}, {"button", MouseButtonNames.getRight(action.mouseButton)}};
   if (action.kind == MobileTouchActionKind::MouseWheelUp)
     return JsonObject{{"type", "wheel"}, {"direction", "up"}};
   if (action.kind == MobileTouchActionKind::MouseWheelDown)
@@ -403,10 +780,16 @@ static Json jsonFromTouchAction(MobileTouchAction const& action) {
 
 static MobileTouchAction touchActionFromJson(Json const& json, MobileTouchAction def) {
   auto type = json.getString("type", "key");
+  if (type.equals("keys", String::CaseInsensitive) || type.equals("macro", String::CaseInsensitive)) {
+    auto keys = keysFromJson(json);
+    return keys.empty() ? def : macroAction(keys);
+  }
+  if (type.equals("mouse", String::CaseInsensitive))
+    return mouseAction(MouseButtonNames.valueLeft(json.getString("button", MouseButtonNames.getRight(def.mouseButton)), def.mouseButton));
   if (type.equals("wheel", String::CaseInsensitive))
     return wheelAction(!json.getString("direction", "up").equals("down", String::CaseInsensitive));
   if (type.equals("none", String::CaseInsensitive))
-    return MobileTouchAction{MobileTouchActionKind::None, Key::Space};
+    return noneAction();
   auto keyName = json.getString("key", KeyNames.getRight(def.key));
   return keyAction(KeyNames.valueLeft(keyName, def.key));
 }
@@ -419,6 +802,8 @@ static Json jsonFromTouchElement(MobileTouchElement const& element) {
     {"enabled", element.enabled},
     {"position", JsonArray{element.position[0], element.position[1]}},
     {"size", element.size},
+    {"pressMode", pressModeName(element.pressMode)},
+    {"aimSensitivity", element.aimSensitivity},
     {"action", jsonFromTouchAction(element.action)}
   };
   if (element.kind == MobileTouchElementKind::DPad) {
@@ -436,6 +821,8 @@ static MobileTouchElement touchElementFromJson(Json const& json, MobileTouchElem
   def.kind = elementKindFromName(json.getString("kind", elementKindName(def.kind)));
   def.enabled = json.getBool("enabled", def.enabled);
   def.size = json.getFloat("size", def.size);
+  def.pressMode = pressModeFromName(json.getString("pressMode", pressModeName(def.pressMode)), def.pressMode);
+  def.aimSensitivity = json.getFloat("aimSensitivity", def.aimSensitivity);
   if (auto pos = json.optArray("position")) {
     if (pos->size() >= 2)
       def.position = Vec2F(pos->get(0).toFloat(), pos->get(1).toFloat());
@@ -494,6 +881,7 @@ struct LauncherState {
   int selectedTouchElement = 0;
   String touchLabelBufferElementId;
   char touchLabelBuffer[64] = {};
+  StringMap<std::array<char, 256>> touchActionBuffers;
   bool newTouchButtonPopup = false;
   int newTouchActionIndex = 0;
   float newTouchButtonSize = 1.0f;
@@ -514,6 +902,8 @@ public:
     : m_windowSize(windowSize), m_displayScalePtr(displayScale), m_safeAreaPtr(safeArea) {}
 
   void setConfig(MobileTouchConfig config) {
+    if (!config.directTouchGestures && m_config.directTouchGestures)
+      cancelDirectTouchGestures();
     m_config = config;
   }
 
@@ -564,22 +954,36 @@ public:
   }
 
   void cancelAll() {
+    clearPulsedActions();
+
     for (auto const& pair : m_keyHoldCounts.pairs()) {
       if (pair.second > 0)
         emitEvent(KeyUpEvent{pair.first});
     }
+    for (auto const& pair : m_mouseHoldCounts.pairs()) {
+      if (pair.second > 0)
+        emitEvent(MouseButtonUpEvent{pair.first, mouseActionPosition()});
+    }
 
     m_fingers.clear();
     m_heldElements.clear();
+    m_toggledElements.clear();
     m_dpadHeld.clear();
     m_nextDPadWheelMs.clear();
+    m_nextActionRepeatMs.clear();
     m_keyActionOwners.clear();
     m_keyHoldCounts.clear();
+    m_mouseActionOwners.clear();
+    m_mouseHoldCounts.clear();
 
     m_joystickActive = false;
     m_joystickFinger = 0;
     m_joystickElementId.clear();
     m_moveVec = {};
+    m_aimJoystickActive = false;
+    m_aimJoystickFinger = 0;
+    m_aimJoystickElementId.clear();
+    m_aimVec = {};
 
     if (m_primaryMouseHeld)
       emitMouseUp(m_primaryTouchPos);
@@ -629,6 +1033,16 @@ public:
         draw->AddCircle(ip(center), drawRadius, base, 48, 3.0f);
         if (m_joystickActive && m_joystickElementId == element.id)
           draw->AddCircleFilled(ip(m_joystickCurrent), drawRadius * 0.45f, fill, 32);
+      } else if (element.kind == MobileTouchElementKind::AimJoystick) {
+        draw->AddCircle(ip(center), drawRadius, base, 48, 3.0f);
+        if (m_aimJoystickActive && m_aimJoystickElementId == element.id)
+          draw->AddCircleFilled(ip(m_aimJoystickCurrent), drawRadius * 0.35f, fill, 32);
+        if (m_hasAimJoystickTarget) {
+          ImVec2 target = ip(m_aimJoystickTarget);
+          float cross = drawRadius * 0.18f;
+          draw->AddLine(ImVec2(target.x - cross, target.y), ImVec2(target.x + cross, target.y), fill, 2.0f);
+          draw->AddLine(ImVec2(target.x, target.y - cross), ImVec2(target.x, target.y + cross), fill, 2.0f);
+        }
       } else if (element.kind == MobileTouchElementKind::DPad) {
         drawDPad(draw, ip(center), drawRadius, element.id, base, fill);
       } else {
@@ -645,6 +1059,7 @@ private:
   enum class FingerRole {
     None,
     Joystick,
+    AimJoystick,
     Aim,
     SuppressedTap,
     SecondaryHold,
@@ -658,6 +1073,7 @@ private:
     Vec2F currentPos;
     String elementId;
     MobileTouchAction action;
+    MobileTouchPressMode pressMode = MobileTouchPressMode::Hold;
     int64_t downTimeMs = 0;
     bool movedTooFarForTap = false;
   };
@@ -696,7 +1112,7 @@ private:
   }
 
   bool heldElement(String const& id) const {
-    return m_heldElements.contains(id) || m_dpadHeld.contains(id + ":up") || m_dpadHeld.contains(id + ":down")
+    return m_heldElements.contains(id) || m_toggledElements.contains(id) || m_dpadHeld.contains(id + ":up") || m_dpadHeld.contains(id + ":down")
         || m_dpadHeld.contains(id + ":left") || m_dpadHeld.contains(id + ":right");
   }
 
@@ -819,8 +1235,8 @@ private:
         state.role = FingerRole::ActionButton;
         state.elementId = element.id;
         state.action = element.action;
-        m_heldElements.add(element.id);
-        setAction(element.action, element.id, true);
+        state.pressMode = element.pressMode;
+        pressActionButton(element);
         claimedControl = true;
         break;
       } else if (element.kind == MobileTouchElementKind::DPad && insideCircle(pos, center, elementRadius * 1.15f)) {
@@ -840,11 +1256,30 @@ private:
         m_moveVec = {};
         claimedControl = true;
         break;
+      } else if (element.kind == MobileTouchElementKind::AimJoystick && insideCircle(pos, center, elementRadius * 1.25f) && !m_aimJoystickActive) {
+        state.role = FingerRole::AimJoystick;
+        state.elementId = element.id;
+        m_aimJoystickActive = true;
+        m_aimJoystickFinger = finger;
+        m_aimJoystickElementId = element.id;
+        m_aimJoystickOrigin = center;
+        m_aimJoystickCurrent = pos;
+        if (!m_hasAimJoystickTarget) {
+          Vec2F canvas = canvasSize();
+          m_aimJoystickTarget = {canvas[0] * 0.5f, canvas[1] * 0.5f};
+          m_hasAimJoystickTarget = true;
+        }
+        updateAimJoystickFinger(state, pos);
+        claimedControl = true;
+        break;
       }
     }
 
     if (claimedControl) {
       // already assigned above
+    } else if (!m_config.directTouchGestures) {
+      state.role = FingerRole::None;
+      state.movedTooFarForTap = true;
     } else if (m_joystickActive && insideCircle(pos, m_joystickOrigin, radius * 1.35f)) {
       // Prevent accidental aiming while thumb rides around the virtual joystick.
       // Quick taps in this region still become UI clicks on release.
@@ -906,6 +1341,8 @@ private:
         m_moveVec = {};
       else
         m_moveVec = delta / radius;
+    } else if (ptr->role == FingerRole::AimJoystick) {
+      updateAimJoystickFinger(*ptr, pos);
     } else if (ptr->role == FingerRole::Aim) {
       m_primaryTouchPos = pos;
       emitMouseMove(pos);
@@ -932,6 +1369,12 @@ private:
         m_joystickElementId.clear();
         m_moveVec = {};
         m_joystickFinger = 0;
+        break;
+      case FingerRole::AimJoystick:
+        m_aimJoystickActive = false;
+        m_aimJoystickElementId.clear();
+        m_aimJoystickFinger = 0;
+        m_aimVec = {};
         break;
       case FingerRole::Aim:
         if (m_primaryMouseHeld) {
@@ -967,8 +1410,7 @@ private:
         m_primaryPausedForSecondary = false;
         break;
       case FingerRole::ActionButton:
-        m_heldElements.remove(ptr->elementId);
-        setAction(ptr->action, ptr->elementId, false);
+        releaseActionButton(*ptr);
         break;
       case FingerRole::DPad:
         clearDPad(ptr->elementId);
@@ -983,6 +1425,27 @@ private:
   void cancelFinger(uint64_t finger) {
     if (auto ptr = m_fingers.ptr(finger))
       releaseFinger(finger, ptr->currentPos, true);
+  }
+
+  void cancelDirectTouchGestures() {
+    if (m_primaryMouseHeld) {
+      emitMouseUp(m_primaryTouchPos);
+      m_primaryMouseHeld = false;
+    }
+    if (m_secondaryMouseHeld) {
+      emitMouseUp(m_secondaryTouchPos, MouseButton::Right);
+      m_secondaryMouseHeld = false;
+    }
+
+    m_primaryHeld = false;
+    m_aimFinger = 0;
+    m_primaryPausedForSecondary = false;
+    m_secondaryHeld = false;
+    m_secondaryFinger = 0;
+
+    for (auto& pair : m_fingers)
+      if (pair.second.role == FingerRole::Aim || pair.second.role == FingerRole::SecondaryHold || pair.second.role == FingerRole::SuppressedTap)
+        pair.second.role = FingerRole::None;
   }
 
   MobileTouchAction dpadAction(MobileTouchElement const& element, String const& direction) const {
@@ -1031,6 +1494,25 @@ private:
     }
   }
 
+  void updateAimJoystickFinger(FingerState& state, Vec2F const& pos) {
+    state.currentPos = pos;
+    float radius = controlRadius();
+    if (auto element = findElement(state.elementId))
+      radius *= std::clamp(element->size, 0.45f, 2.4f);
+
+    Vec2F delta = pos - m_aimJoystickOrigin;
+    float mag = delta.magnitude();
+    if (mag > radius)
+      delta = delta / mag * radius;
+
+    m_aimJoystickCurrent = m_aimJoystickOrigin + delta;
+    float normMag = delta.magnitude() / radius;
+    if (normMag < m_config.deadzone)
+      m_aimVec = {};
+    else
+      m_aimVec = delta / radius;
+  }
+
   void clearDPad(String const& elementId) {
     if (auto element = findElement(elementId)) {
       for (auto const& candidate : {"up", "down", "left", "right"}) {
@@ -1068,6 +1550,9 @@ private:
     setKeyOwner("joystick:left", Key::A, m_moveVec[0] < -0.30f);
     setKeyOwner("joystick:up", Key::W, m_moveVec[1] < -0.30f);
     setKeyOwner("joystick:down", Key::S, m_moveVec[1] > 0.30f);
+    updateAimJoystickTarget();
+    releaseExpiredPulsedActions();
+    repeatActionButtons();
     repeatDPadWheelActions();
 
     if (m_primaryHeld && !m_primaryMouseHeld && !m_secondaryMouseHeld) {
@@ -1077,6 +1562,66 @@ private:
     } else if (!m_primaryHeld && m_primaryMouseHeld) {
       m_primaryMouseHeld = false;
       emitMouseUp(m_primaryTouchPos);
+    }
+  }
+
+  void updateAimJoystickTarget() {
+    if (!m_aimJoystickActive || m_aimVec.magnitudeSquared() <= 0.0001f)
+      return;
+
+    Vec2F canvas = canvasSize();
+    float sensitivity = 1.0f;
+    if (auto element = findElement(m_aimJoystickElementId))
+      sensitivity = std::clamp(element->aimSensitivity, 0.25f, 4.0f);
+    float speed = controlRadius() * 0.22f * sensitivity * std::clamp(m_aimVec.magnitude(), 0.25f, 1.0f);
+    m_aimJoystickTarget += m_aimVec * speed;
+    m_aimJoystickTarget[0] = std::clamp(m_aimJoystickTarget[0], 0.0f, canvas[0]);
+    m_aimJoystickTarget[1] = std::clamp(m_aimJoystickTarget[1], 0.0f, canvas[1]);
+    m_hasAimJoystickTarget = true;
+    emitMouseMove(m_aimJoystickTarget);
+  }
+
+  void repeatActionButtons() {
+    int64_t now = Time::monotonicMilliseconds();
+    for (auto const& pair : m_fingers.pairs()) {
+      auto const& state = pair.second;
+      if (state.role != FingerRole::ActionButton || state.pressMode != MobileTouchPressMode::Repeat)
+        continue;
+      auto next = m_nextActionRepeatMs.value(state.elementId, 0);
+      if (next > now)
+        continue;
+      startPulsedAction(state.action, state.elementId);
+      m_nextActionRepeatMs[state.elementId] = now + 110;
+    }
+  }
+
+  void pressActionButton(MobileTouchElement const& element) {
+    m_heldElements.add(element.id);
+    if (element.pressMode == MobileTouchPressMode::Toggle) {
+      if (m_toggledElements.contains(element.id)) {
+        m_toggledElements.remove(element.id);
+        setAction(element.action, element.id, false);
+      } else {
+        m_toggledElements.add(element.id);
+        setAction(element.action, element.id, true);
+      }
+    } else if (element.pressMode == MobileTouchPressMode::SinglePress) {
+      startPulsedAction(element.action, element.id);
+    } else if (element.pressMode == MobileTouchPressMode::Repeat) {
+      startPulsedAction(element.action, element.id);
+      m_nextActionRepeatMs[element.id] = Time::monotonicMilliseconds() + 110;
+    } else {
+      setAction(element.action, element.id, true);
+    }
+  }
+
+  void releaseActionButton(FingerState const& state) {
+    m_heldElements.remove(state.elementId);
+    if (state.pressMode == MobileTouchPressMode::Hold)
+      setAction(state.action, state.elementId, false);
+    else if (state.pressMode == MobileTouchPressMode::Repeat) {
+      m_nextActionRepeatMs.remove(state.elementId);
+      cancelPulsedAction(state.elementId);
     }
   }
 
@@ -1101,18 +1646,91 @@ private:
     }
   }
 
-  void setAction(MobileTouchAction const& action, String const& owner, bool desired) {
-    if (action.kind == MobileTouchActionKind::Key) {
-      setKeyOwner(owner, action.key, desired);
-    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
-      emitEvent(MouseWheelEvent{MouseWheel::Up, m_lastPointerInput});
-    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
-      emitEvent(MouseWheelEvent{MouseWheel::Down, m_lastPointerInput});
+  void setMouseOwner(String const& owner, MouseButton button, bool desired) {
+    String token = owner + ":" + MouseButtonNames.getRight(button);
+
+    if (desired && !m_mouseActionOwners.contains(token)) {
+      m_mouseActionOwners.add(token);
+      unsigned count = m_mouseHoldCounts.value(button, 0);
+      m_mouseHoldCounts.set(button, count + 1);
+      if (count == 0)
+        emitEvent(MouseButtonDownEvent{button, mouseActionPosition()});
+    } else if (!desired && m_mouseActionOwners.contains(token)) {
+      m_mouseActionOwners.remove(token);
+      unsigned count = m_mouseHoldCounts.value(button, 0);
+      if (count <= 1) {
+        m_mouseHoldCounts.remove(button);
+        emitEvent(MouseButtonUpEvent{button, mouseActionPosition()});
+      } else {
+        m_mouseHoldCounts.set(button, count - 1);
+      }
     }
   }
 
+  void setAction(MobileTouchAction const& action, String const& owner, bool desired) {
+    if (action.kind == MobileTouchActionKind::Key) {
+      setKeyOwner(owner, action.key, desired);
+    } else if (action.kind == MobileTouchActionKind::KeyMacro) {
+      for (auto key : action.keys)
+        setKeyOwner(owner, key, desired);
+    } else if (action.kind == MobileTouchActionKind::MouseButton) {
+      setMouseOwner(owner, action.mouseButton, desired);
+    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelUp) {
+      emitEvent(MouseWheelEvent{MouseWheel::Up, mouseActionPosition()});
+    } else if (desired && action.kind == MobileTouchActionKind::MouseWheelDown) {
+      emitEvent(MouseWheelEvent{MouseWheel::Down, mouseActionPosition()});
+    }
+  }
+
+  bool actionNeedsRelease(MobileTouchAction const& action) const {
+    return action.kind == MobileTouchActionKind::Key || action.kind == MobileTouchActionKind::KeyMacro || action.kind == MobileTouchActionKind::MouseButton;
+  }
+
+  void startPulsedAction(MobileTouchAction const& action, String const& owner) {
+    setAction(action, owner, true);
+    if (!actionNeedsRelease(action))
+      return;
+
+    m_pulsedActions[owner] = action;
+    m_pulsedActionReleaseMs[owner] = Time::monotonicMilliseconds() + 55;
+  }
+
+  void cancelPulsedAction(String const& owner) {
+    if (auto action = m_pulsedActions.ptr(owner))
+      setAction(*action, owner, false);
+    m_pulsedActions.remove(owner);
+    m_pulsedActionReleaseMs.remove(owner);
+  }
+
+  void releaseExpiredPulsedActions() {
+    int64_t now = Time::monotonicMilliseconds();
+    StringList expired;
+    for (auto const& pair : m_pulsedActionReleaseMs.pairs()) {
+      if (pair.second <= now)
+        expired.append(pair.first);
+    }
+
+    for (auto const& owner : expired)
+      cancelPulsedAction(owner);
+  }
+
+  void clearPulsedActions() {
+    StringList owners;
+    for (auto const& pair : m_pulsedActions.pairs())
+      owners.append(pair.first);
+
+    for (auto const& owner : owners)
+      cancelPulsedAction(owner);
+  }
+
+  Vec2F mouseActionPosition() const {
+    return m_hasCursorInputPosition ? m_cursorInputPosition : m_lastPointerInput;
+  }
+
   void emitMouseMove(Vec2F const& pos) {
-    emitEvent(MouseMoveEvent{{0, 0}, toInputSpace(pos)});
+    m_cursorInputPosition = toInputSpace(pos);
+    m_hasCursorInputPosition = true;
+    emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition});
   }
 
   void emitMouseDown(Vec2F const& pos, MouseButton button = MouseButton::Left) {
@@ -1165,10 +1783,16 @@ private:
 
   StableHashMap<uint64_t, FingerState> m_fingers;
   StringSet m_heldElements;
+  StringSet m_toggledElements;
   StringSet m_dpadHeld;
   StringMap<int64_t> m_nextDPadWheelMs;
+  StringMap<int64_t> m_nextActionRepeatMs;
+  StringMap<MobileTouchAction> m_pulsedActions;
+  StringMap<int64_t> m_pulsedActionReleaseMs;
   StringSet m_keyActionOwners;
   HashMap<Key, unsigned> m_keyHoldCounts;
+  StringSet m_mouseActionOwners;
+  HashMap<MouseButton, unsigned> m_mouseHoldCounts;
 
   bool m_joystickActive = false;
   uint64_t m_joystickFinger = 0;
@@ -1177,6 +1801,15 @@ private:
   Vec2F m_joystickOrigin;
   Vec2F m_joystickCurrent;
   Vec2F m_moveVec;
+
+  bool m_aimJoystickActive = false;
+  uint64_t m_aimJoystickFinger = 0;
+  String m_aimJoystickElementId;
+  Vec2F m_aimJoystickOrigin;
+  Vec2F m_aimJoystickCurrent;
+  Vec2F m_aimJoystickTarget;
+  Vec2F m_aimVec;
+  bool m_hasAimJoystickTarget = false;
 
   bool m_primaryHeld = false;
   bool m_primaryMouseHeld = false;
@@ -1188,6 +1821,8 @@ private:
   uint64_t m_secondaryFinger = 0;
   Vec2F m_secondaryTouchPos;
   Vec2F m_lastPointerInput;
+  Vec2F m_cursorInputPosition;
+  bool m_hasCursorInputPosition = false;
 
 };
 
@@ -1762,6 +2397,7 @@ private:
     }
 
     state.touchConfig.enabled = config.queryBool("touch.enabled", true);
+    state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
     state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
     state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
     state.touchConfig.deadzone = config.queryFloat("touch.deadzone", 0.15f);
@@ -1773,6 +2409,8 @@ private:
 
   std::vector<pair<char const*, MobileTouchAction>> touchActionChoices() const {
     return {
+      {"Left Hand / Mouse Left", mouseAction(MouseButton::Left)},
+      {"Right Hand / Mouse Right", mouseAction(MouseButton::Right)},
       {"Jump / J (Space)", keyAction(Key::Space)},
       {"Interact / E", keyAction(Key::E)},
       {"Escape / Pause", keyAction(Key::Escape)},
@@ -1795,21 +2433,38 @@ private:
       {"Action Bar 4", keyAction(Key::Four)},
       {"Action Bar 5", keyAction(Key::Five)},
       {"Scroll Up", wheelAction(true)},
-      {"Scroll Down", wheelAction(false)}
+      {"Scroll Down", wheelAction(false)},
+      {"No Action", noneAction()}
     };
+  }
+
+  bool touchActionEqual(MobileTouchAction const& a, MobileTouchAction const& b) const {
+    if (a.kind != b.kind)
+      return false;
+    if (a.kind == MobileTouchActionKind::Key)
+      return a.key == b.key;
+    if (a.kind == MobileTouchActionKind::KeyMacro)
+      return a.keys == b.keys;
+    if (a.kind == MobileTouchActionKind::MouseButton)
+      return a.mouseButton == b.mouseButton;
+    return true;
   }
 
   int touchActionIndex(MobileTouchAction const& action) const {
     auto choices = touchActionChoices();
     for (size_t i = 0; i < choices.size(); ++i) {
       auto const& candidate = choices[i].second;
-      if (candidate.kind == action.kind && candidate.key == action.key)
+      if (touchActionEqual(candidate, action))
         return (int)i;
     }
     return 0;
   }
 
-  void renderTouchActionCombo(char const* label, MobileTouchAction& action) {
+  String touchActionKeysText(MobileTouchAction const& action) const {
+    return keysName(keysFromTouchAction(action));
+  }
+
+  void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
     auto choices = touchActionChoices();
     int index = touchActionIndex(action);
     if (ImGui::BeginCombo(label, choices[index].first)) {
@@ -1818,7 +2473,54 @@ private:
         if (ImGui::Selectable(choices[i].first, selected)) {
           index = (int)i;
           action = choices[i].second;
+          if (auto buffer = state.touchActionBuffers.ptr(bufferId))
+            std::snprintf(buffer->data(), buffer->size(), "%s", touchActionKeysText(action).utf8Ptr());
         }
+        if (selected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+
+    if (!state.touchActionBuffers.contains(bufferId)) {
+      state.touchActionBuffers[bufferId] = {};
+      auto& buffer = state.touchActionBuffers[bufferId];
+      std::snprintf(buffer.data(), buffer.size(), "%s", touchActionKeysText(action).utf8Ptr());
+    }
+
+    auto& buffer = state.touchActionBuffers[bufferId];
+    ImGui::PushID(bufferId.utf8Ptr());
+    ImGui::InputTextWithHint("Custom keys", "Example: LShift+F1 or Ctrl,Alt,E", buffer.data(), buffer.size());
+    ImGui::SameLine();
+    if (ImGui::Button("Apply")) {
+      auto keys = keysFromText(String(buffer.data()));
+      if (keys.size() == 1)
+        action = keyAction(keys[0]);
+      else if (!keys.empty())
+        action = macroAction(keys);
+    }
+    ImGui::PopID();
+  }
+
+  void renderTouchPressModeCombo(MobileTouchElement& element) {
+    std::vector<pair<char const*, MobileTouchPressMode>> choices{
+      {"Single press", MobileTouchPressMode::SinglePress},
+      {"Rapid fire / repeat", MobileTouchPressMode::Repeat},
+      {"Hold", MobileTouchPressMode::Hold},
+      {"Toggle", MobileTouchPressMode::Toggle}
+    };
+    int index = 0;
+    for (int i = 0; i < (int)choices.size(); ++i) {
+      if (choices[i].second == element.pressMode) {
+        index = i;
+        break;
+      }
+    }
+    if (ImGui::BeginCombo("Button behavior", choices[index].first)) {
+      for (int i = 0; i < (int)choices.size(); ++i) {
+        bool selected = index == i;
+        if (ImGui::Selectable(choices[i].first, selected))
+          element.pressMode = choices[i].second;
         if (selected)
           ImGui::SetItemDefaultFocus();
       }
@@ -1857,9 +2559,14 @@ private:
       draw->AddRectFilled(ImVec2(center.x - radius, center.y - arm), ImVec2(center.x + radius, center.y + arm), fill, arm * 0.2f);
       draw->AddRect(ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius), base, arm * 0.25f, 0, 3.0f);
       draw->AddText(ImVec2(center.x - radius * 0.38f, center.y - radius * 0.18f), base, "D-PAD");
-    } else if (element.kind == MobileTouchElementKind::Joystick) {
+    } else if (element.kind == MobileTouchElementKind::Joystick || element.kind == MobileTouchElementKind::AimJoystick) {
       draw->AddCircle(center, radius, base, 48, 3.0f);
       draw->AddCircleFilled(center, radius * 0.34f, fill, 32);
+      if (element.kind == MobileTouchElementKind::AimJoystick) {
+        float cross = radius * 0.18f;
+        draw->AddLine(ImVec2(center.x - cross, center.y), ImVec2(center.x + cross, center.y), base, 2.0f);
+        draw->AddLine(ImVec2(center.x, center.y - cross), ImVec2(center.x, center.y + cross), base, 2.0f);
+      }
     } else {
       draw->AddCircleFilled(center, radius * 0.55f, fill, 32);
       draw->AddCircle(center, radius * 0.55f, base, 48, 3.0f);
@@ -1906,6 +2613,7 @@ private:
       persistLauncherState(state);
 
     ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
+    ImGui::Checkbox("Enable direct screen touch gestures", &state.touchConfig.directTouchGestures);
     ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
     ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
@@ -1978,13 +2686,18 @@ private:
           float position[2] = {element.position[0], element.position[1]};
           if (ImGui::SliderFloat2("Position", position, 0.03f, 0.97f))
             element.position = {position[0], position[1]};
-          if (element.kind == MobileTouchElementKind::Button)
-            renderTouchActionCombo("Interaction", element.action);
+          if (element.kind == MobileTouchElementKind::Button) {
+            renderTouchActionCombo(state, "Interaction", element.action, element.id + ":action");
+            renderTouchPressModeCombo(element);
+          }
           else if (element.kind == MobileTouchElementKind::DPad) {
-            renderTouchActionCombo("Up", element.upAction);
-            renderTouchActionCombo("Down", element.downAction);
-            renderTouchActionCombo("Left", element.leftAction);
-            renderTouchActionCombo("Right", element.rightAction);
+            renderTouchActionCombo(state, "Up", element.upAction, element.id + ":up");
+            renderTouchActionCombo(state, "Down", element.downAction, element.id + ":down");
+            renderTouchActionCombo(state, "Left", element.leftAction, element.id + ":left");
+            renderTouchActionCombo(state, "Right", element.rightAction, element.id + ":right");
+          } else if (element.kind == MobileTouchElementKind::AimJoystick) {
+            ImGui::SliderFloat("Aim sensitivity", &element.aimSensitivity, 0.25f, 4.0f);
+            ImGui::TextDisabled("Aim joystick moves the virtual cursor only.");
           } else {
             ImGui::TextDisabled("Joystick sends movement keys.");
           }
@@ -2280,6 +2993,7 @@ private:
       {"packedPakPath", state.packedPakPath},
       {"touch", JsonObject{
         {"enabled", state.touchConfig.enabled},
+        {"directTouchGestures", state.touchConfig.directTouchGestures},
         {"opacity", state.touchConfig.opacity},
         {"size", state.touchConfig.size},
         {"deadzone", state.touchConfig.deadzone},
@@ -2344,6 +3058,7 @@ private:
         {"mobile", JsonObject{
           {"touchControls", JsonObject{
             {"enabled", state.touchConfig.enabled},
+            {"directTouchGestures", state.touchConfig.directTouchGestures},
             {"opacity", state.touchConfig.opacity},
             {"size", state.touchConfig.size},
             {"deadzone", state.touchConfig.deadzone},
@@ -2463,6 +3178,7 @@ private:
         auto cfg = configService->loadLauncherConfig();
         MobileTouchConfig touch;
         touch.enabled = cfg.queryBool("touch.enabled", true);
+        touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
         touch.opacity = cfg.queryFloat("touch.opacity", 0.35f);
         touch.size = cfg.queryFloat("touch.size", 1.0f);
         touch.deadzone = cfg.queryFloat("touch.deadzone", 0.15f);
@@ -2612,6 +3328,25 @@ private:
     // session without rebuilding the entire object.
   }
 
+  Vec2F externalMouseInputPosition(float x, float y) const {
+    // External mice report physical window coordinates, while the game is
+    // rendered into the safe-area canvas. Touch input already goes through the
+    // touch adapter's canvas conversion; keep this path for real mouse devices.
+    Vec2U canvas = gameCanvasSize();
+    return {
+      x - (float)m_safeArea.left,
+      (float)canvas[1] - (y - (float)m_safeArea.top)
+    };
+  }
+
+  Vec2F legacyWindowMouseInputPosition(float x, float y) const {
+    return {x, (float)m_windowSize[1] - y};
+  }
+
+  Vec2F mouseInputPosition(float x, float y, bool touchDerivedMouse) const {
+    return touchDerivedMouse ? legacyWindowMouseInputPosition(x, y) : externalMouseInputPosition(x, y);
+  }
+
   List<InputEvent> processEvents() {
     List<InputEvent> events;
 
@@ -2622,7 +3357,7 @@ private:
     m_touchAdapter->beginFrame();
 
     while (SDL_PollEvent(&event)) {
-      bool touchDerivedMouse = overlayEnabled && isTouchDerivedMouseEvent(event);
+      bool touchDerivedMouse = isTouchDerivedMouseEvent(event);
       if (event.type != SDL_EVENT_FINGER_DOWN
           && event.type != SDL_EVENT_FINGER_UP
           && event.type != SDL_EVENT_FINGER_MOTION
@@ -2664,26 +3399,32 @@ private:
 
       if (m_touchAdapter->processSdlEvent(event))
         continue;
-      if (touchDerivedMouse)
+      if (overlayEnabled && touchDerivedMouse)
         continue;
 
       Maybe<InputEvent> input;
       if (event.type == SDL_EVENT_KEY_DOWN && (!overlayEnabled || (!io->WantCaptureKeyboard || !io->WantTextInput)) && !event.key.repeat) {
-        if (auto key = keyFromSdlKeyCode(event.key.key))
+        auto key = keyFromSdlKeyCode(event.key.key);
+        if (!key)
+          key = keyFromSdlScancode(event.key.scancode);
+        if (key)
           input.set(KeyDownEvent{*key, (KeyMod)event.key.mod});
       } else if (event.type == SDL_EVENT_KEY_UP) {
-        if (auto key = keyFromSdlKeyCode(event.key.key))
+        auto key = keyFromSdlKeyCode(event.key.key);
+        if (!key)
+          key = keyFromSdlScancode(event.key.scancode);
+        if (key)
           input.set(KeyUpEvent{*key});
       } else if (event.type == SDL_EVENT_TEXT_INPUT && (!overlayEnabled || !io->WantTextInput)) {
         input.set(TextInputEvent{event.text.text});
       } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
-        input.set(MouseMoveEvent{{event.motion.xrel, -event.motion.yrel}, {event.motion.x, (int)m_windowSize[1] - event.motion.y}});
+        input.set(MouseMoveEvent{{event.motion.xrel, -event.motion.yrel}, mouseInputPosition(event.motion.x, event.motion.y, touchDerivedMouse)});
       } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && (!overlayEnabled || !io->WantCaptureMouse)) {
-        input.set(MouseButtonDownEvent{mouseButtonFromSdlMouseButton(event.button.button), {event.button.x, (int)m_windowSize[1] - event.button.y}});
+        input.set(MouseButtonDownEvent{mouseButtonFromSdlMouseButton(event.button.button), mouseInputPosition(event.button.x, event.button.y, touchDerivedMouse)});
       } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && (!overlayEnabled || !io->WantCaptureMouse)) {
-        input.set(MouseButtonUpEvent{mouseButtonFromSdlMouseButton(event.button.button), {event.button.x, (int)m_windowSize[1] - event.button.y}});
+        input.set(MouseButtonUpEvent{mouseButtonFromSdlMouseButton(event.button.button), mouseInputPosition(event.button.x, event.button.y, touchDerivedMouse)});
       } else if (event.type == SDL_EVENT_MOUSE_WHEEL && (!overlayEnabled || !io->WantCaptureMouse)) {
-        input.set(MouseWheelEvent{event.wheel.y < 0 ? MouseWheel::Down : MouseWheel::Up, {event.wheel.mouse_x, (int)m_windowSize[1] - event.wheel.mouse_y}});
+        input.set(MouseWheelEvent{event.wheel.y < 0 ? MouseWheel::Down : MouseWheel::Up, mouseInputPosition(event.wheel.mouse_x, event.wheel.mouse_y, touchDerivedMouse)});
       } else if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
         input.set(ControllerAxisEvent{(ControllerId)event.gaxis.which, controllerAxisFromSdlControllerAxis(event.gaxis.axis), (float)event.gaxis.value / 32768.0f});
       } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
