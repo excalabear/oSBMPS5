@@ -124,6 +124,12 @@ public:
   void setScreenOffset(Vec2U offset) { m_screenOffset = offset; }
   Vec2U screenOffset() const { return m_screenOffset; }
 
+  // Physical-pixel size of the final viewport. This normally matches
+  // screenSize(), but mobile can render a smaller logical canvas and upscale it
+  // into the fullscreen safe area.
+  void setScreenViewportSize(Vec2U viewportSize);
+  Vec2U screenViewportSize() const { return m_screenViewportSize; }
+
   // On iOS EAGL, FBO 0 is not the screen; SDL creates a custom FBO. Store it
   // here so startFrame/finishFrame/blit all render to the right target.
   void setScreenFramebuffer(GLuint fbo) { m_screenFbo = fbo; }
@@ -303,8 +309,9 @@ private:
   void blitGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer);
   void switchGlFrameBuffer(RefPtr<OpenGlRenderer::GlFrameBuffer> const& frameBuffer);
 
-  Vec2U m_screenSize;
-  Vec2U m_screenOffset;
+  Vec2U m_screenSize = {0, 0};
+  Vec2U m_screenOffset = {0, 0};
+  Vec2U m_screenViewportSize = {0, 0};
   GLuint m_screenFbo = 0;
 
   GLuint m_program = 0;

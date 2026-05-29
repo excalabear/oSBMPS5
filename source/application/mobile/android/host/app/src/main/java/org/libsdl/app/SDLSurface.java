@@ -36,6 +36,19 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     // Sensors
     protected SensorManager mSensorManager;
     protected Display mDisplay;
+    protected boolean mGyroscopeEnabled;
+    protected Sensor mGyroscopeSensor;
+    protected int mGyroscopeSensorType;
+    protected boolean mAccelerometerGyroFallbackEnabled;
+    protected boolean mHasLastRotationQuaternion;
+    protected final float[] mLastRotationQuaternion = new float[4];
+    protected long mLastRotationVectorTimestamp;
+    protected boolean mHasLastGravityVector;
+    protected final float[] mLastGravityVector = new float[3];
+    protected long mLastGravityTimestamp;
+    protected boolean mHasFilteredAccelerometer;
+    protected final float[] mFilteredAccelerometer = new float[3];
+    protected long mLastNonAccelerometerGyroTimestamp;
 
     // Keep track of the surface size to normalize touch events
     protected float mWidth, mHeight;
@@ -69,6 +82,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
 
     public void handlePause() {
         enableSensor(Sensor.TYPE_ACCELEROMETER, false);
+        boolean gyroscopeEnabled = mGyroscopeEnabled;
+        enableSensor(Sensor.TYPE_GYROSCOPE, false);
+        mGyroscopeEnabled = gyroscopeEnabled;
     }
 
     public void handleResume() {
@@ -79,6 +95,9 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         setOnKeyListener(this);
         setOnTouchListener(this);
         enableSensor(Sensor.TYPE_ACCELEROMETER, true);
+        if (mGyroscopeEnabled) {
+            enableSensor(Sensor.TYPE_GYROSCOPE, true);
+        }
     }
 
     public Surface getNativeSurface() {
@@ -300,16 +319,211 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     }
 
     // Sensor events
-    public void enableSensor(int sensortype, boolean enabled) {
+    public boolean enableSensor(int sensortype, boolean enabled) {
+        if (sensortype == Sensor.TYPE_GYROSCOPE) {
+            return enableGyroSensor(enabled);
+        }
+
         // TODO: This uses getDefaultSensor - what if we have >1 accels?
+        Sensor sensor = mSensorManager.getDefaultSensor(sensortype);
+        if (sensor == null) {
+            return false;
+        }
+
         if (enabled) {
-            mSensorManager.registerListener(this,
-                            mSensorManager.getDefaultSensor(sensortype),
+            return mSensorManager.registerListener(this,
+                            sensor,
                             SensorManager.SENSOR_DELAY_GAME, null);
         } else {
             mSensorManager.unregisterListener(this,
-                            mSensorManager.getDefaultSensor(sensortype));
+                            sensor);
+            return true;
         }
+    }
+
+    protected Sensor bestGyroSensor() {
+        Sensor sensor = mSensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+        if (sensor != null) {
+            return sensor;
+        }
+
+        if (Build.VERSION.SDK_INT >= 18) {
+            sensor = mSensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED);
+            if (sensor != null) {
+                return sensor;
+            }
+
+            sensor = mSensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+            if (sensor != null) {
+                return sensor;
+            }
+        }
+
+        sensor = mSensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        if (sensor != null) {
+            return sensor;
+        }
+
+        sensor = mSensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY);
+        if (sensor != null) {
+            return sensor;
+        }
+
+        return mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+    }
+
+    protected boolean enableGyroSensor(boolean enabled) {
+        mGyroscopeEnabled = enabled;
+        resetGyroDerivedState();
+
+        if (mGyroscopeSensor != null && !mAccelerometerGyroFallbackEnabled) {
+            mSensorManager.unregisterListener(this, mGyroscopeSensor);
+        }
+        mGyroscopeSensor = null;
+        mGyroscopeSensorType = 0;
+        mAccelerometerGyroFallbackEnabled = false;
+
+        if (!enabled) {
+            return true;
+        }
+
+        Sensor sensor = bestGyroSensor();
+        if (sensor == null) {
+            Log.w("SDL", "No gyro, rotation-vector, gravity, or accelerometer fallback sensor available");
+            return false;
+        }
+
+        boolean registered = mSensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME, null);
+        if (registered) {
+            mGyroscopeSensor = sensor;
+            mGyroscopeSensorType = sensor.getType();
+            mAccelerometerGyroFallbackEnabled = mGyroscopeSensorType == Sensor.TYPE_ACCELEROMETER;
+            Log.v("SDL", "Gyro aim sensor enabled: " + sensor.getName() + " type=" + mGyroscopeSensorType);
+        } else {
+            Log.w("SDL", "Failed to register gyro aim sensor: " + sensor.getName());
+        }
+        return registered;
+    }
+
+    protected void resetGyroDerivedState() {
+        mHasLastRotationQuaternion = false;
+        mLastRotationVectorTimestamp = 0;
+        mHasLastGravityVector = false;
+        mLastGravityTimestamp = 0;
+        mHasFilteredAccelerometer = false;
+        mLastNonAccelerometerGyroTimestamp = 0;
+    }
+
+    protected static float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
+    }
+
+    protected void emitGyro(long timestamp, float x, float y, float z, boolean nonAccelerometer) {
+        if (nonAccelerometer) {
+            mLastNonAccelerometerGyroTimestamp = timestamp;
+        }
+        SDLActivity.onNativeGyro(x, y, z);
+    }
+
+    protected void handleRotationVectorGyro(SensorEvent event) {
+        float[] q = new float[4];
+        SensorManager.getQuaternionFromVector(q, event.values);
+
+        if (mHasLastRotationQuaternion) {
+            float dot = q[0] * mLastRotationQuaternion[0]
+                    + q[1] * mLastRotationQuaternion[1]
+                    + q[2] * mLastRotationQuaternion[2]
+                    + q[3] * mLastRotationQuaternion[3];
+            if (dot < 0.0f) {
+                q[0] = -q[0];
+                q[1] = -q[1];
+                q[2] = -q[2];
+                q[3] = -q[3];
+            }
+
+            float dt = (event.timestamp - mLastRotationVectorTimestamp) * 0.000000001f;
+            if (dt > 0.0f && dt < 0.25f) {
+                float lw = mLastRotationQuaternion[0];
+                float lx = mLastRotationQuaternion[1];
+                float ly = mLastRotationQuaternion[2];
+                float lz = mLastRotationQuaternion[3];
+                float dw = q[0] * lw + q[1] * lx + q[2] * ly + q[3] * lz;
+                float dx = -q[0] * lx + q[1] * lw - q[2] * lz + q[3] * ly;
+                float dy = -q[0] * ly + q[1] * lz + q[2] * lw - q[3] * lx;
+                float dz = -q[0] * lz - q[1] * ly + q[2] * lx + q[3] * lw;
+
+                dw = clamp(dw, -1.0f, 1.0f);
+                float angle = 2.0f * (float)Math.acos(dw);
+                float sinHalf = (float)Math.sqrt(Math.max(0.0f, 1.0f - dw * dw));
+                float scale = sinHalf > 0.0001f ? angle / (sinHalf * dt) : 2.0f / dt;
+                emitGyro(event.timestamp, dx * scale, dy * scale, dz * scale, true);
+            }
+        }
+
+        System.arraycopy(q, 0, mLastRotationQuaternion, 0, 4);
+        mLastRotationVectorTimestamp = event.timestamp;
+        mHasLastRotationQuaternion = true;
+    }
+
+    protected void handleTiltVectorGyroFallback(float x, float y, float z, long timestamp, boolean nonAccelerometer) {
+        float mag = (float)Math.sqrt(x * x + y * y + z * z);
+        if (mag <= 0.0001f) {
+            return;
+        }
+
+        x /= mag;
+        y /= mag;
+        z /= mag;
+
+        if (mHasLastGravityVector) {
+            float dt = (timestamp - mLastGravityTimestamp) * 0.000000001f;
+            if (dt > 0.0f && dt < 0.25f) {
+                float cx = mLastGravityVector[1] * z - mLastGravityVector[2] * y;
+                float cy = mLastGravityVector[2] * x - mLastGravityVector[0] * z;
+                float cz = mLastGravityVector[0] * y - mLastGravityVector[1] * x;
+                float crossMag = (float)Math.sqrt(cx * cx + cy * cy + cz * cz);
+                float dot = clamp(mLastGravityVector[0] * x + mLastGravityVector[1] * y + mLastGravityVector[2] * z, -1.0f, 1.0f);
+                if (crossMag > 0.0001f) {
+                    float angle = (float)Math.atan2(crossMag, dot);
+                    float scale = angle / (crossMag * dt);
+                    emitGyro(timestamp, cx * scale, cy * scale, cz * scale, nonAccelerometer);
+                }
+            }
+        }
+
+        mLastGravityVector[0] = x;
+        mLastGravityVector[1] = y;
+        mLastGravityVector[2] = z;
+        mLastGravityTimestamp = timestamp;
+        mHasLastGravityVector = true;
+    }
+
+    protected void handleGravityGyroFallback(SensorEvent event) {
+        handleTiltVectorGyroFallback(event.values[0], event.values[1], event.values[2], event.timestamp, true);
+    }
+
+    protected void handleAccelerometerGyroFallback(SensorEvent event) {
+        if (!mHasFilteredAccelerometer) {
+            mFilteredAccelerometer[0] = event.values[0];
+            mFilteredAccelerometer[1] = event.values[1];
+            mFilteredAccelerometer[2] = event.values[2];
+            mHasFilteredAccelerometer = true;
+        } else {
+            // Estimate gravity from raw accelerometer data.  This keeps the
+            // fallback usable on devices without gyro / rotation-vector sensors
+            // while damping quick linear motion from hand movement.
+            float alpha = 0.86f;
+            mFilteredAccelerometer[0] = mFilteredAccelerometer[0] * alpha + event.values[0] * (1.0f - alpha);
+            mFilteredAccelerometer[1] = mFilteredAccelerometer[1] * alpha + event.values[1] * (1.0f - alpha);
+            mFilteredAccelerometer[2] = mFilteredAccelerometer[2] * alpha + event.values[2] * (1.0f - alpha);
+        }
+
+        handleTiltVectorGyroFallback(
+                mFilteredAccelerometer[0],
+                mFilteredAccelerometer[1],
+                mFilteredAccelerometer[2],
+                event.timestamp,
+                false);
     }
 
     @Override
@@ -359,7 +573,22 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
                                       y / SensorManager.GRAVITY_EARTH,
                                       event.values[2] / SensorManager.GRAVITY_EARTH);
 
+            if (mGyroscopeEnabled
+                    && (mAccelerometerGyroFallbackEnabled
+                    || mLastNonAccelerometerGyroTimestamp == 0
+                    || event.timestamp - mLastNonAccelerometerGyroTimestamp > 250000000L)) {
+                handleAccelerometerGyroFallback(event);
+            }
 
+        } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            emitGyro(event.timestamp, event.values[0], event.values[1], event.values[2], true);
+        } else if (Build.VERSION.SDK_INT >= 18 && event.sensor.getType() == Sensor.TYPE_GYROSCOPE_UNCALIBRATED) {
+            emitGyro(event.timestamp, event.values[0], event.values[1], event.values[2], true);
+        } else if ((Build.VERSION.SDK_INT >= 18 && event.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR)
+                || event.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+            handleRotationVectorGyro(event);
+        } else if (event.sensor.getType() == Sensor.TYPE_GRAVITY && mGyroscopeEnabled) {
+            handleGravityGyroFallback(event);
         }
     }
 

@@ -8,6 +8,7 @@ import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.hardware.Sensor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -482,6 +483,24 @@ public final class MainActivity extends SDLActivity {
 
         File fallback = new File(fallbackStorageRoot);
         return ensureWritableDirectory(fallback) ? fallback.getAbsolutePath() : fallbackStorageRoot;
+    }
+
+    public static boolean setGyroSensorEnabled(boolean enabled) {
+        MainActivity activity = instance();
+        if (activity == null) {
+            return false;
+        }
+
+        if (mSurface == null) {
+            return false;
+        }
+
+        activity.runOnUiThread(() -> {
+            if (mSurface != null) {
+                mSurface.enableSensor(Sensor.TYPE_GYROSCOPE, enabled);
+            }
+        });
+        return true;
     }
 
     public static String resolveModsDirectory(String fallbackModsDirectory) {

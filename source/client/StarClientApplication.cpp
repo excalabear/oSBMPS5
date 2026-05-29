@@ -458,6 +458,10 @@ void ClientApplication::renderInit(RendererPtr renderer) {
 }
 
 void ClientApplication::windowChanged(WindowMode windowMode, Vec2U screenSize) {
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+  _unused(windowMode);
+  _unused(screenSize);
+#else
   auto config = m_root->configuration();
   if (windowMode == WindowMode::Fullscreen) {
     config->set("fullscreenResolution", jsonFromVec2U(screenSize));
@@ -476,6 +480,7 @@ void ClientApplication::windowChanged(WindowMode windowMode, Vec2U screenSize) {
     config->set("borderless", false);
     config->set("windowedResolution", jsonFromVec2U(screenSize));
   }
+#endif
 }
 
 void ClientApplication::processInput(InputEvent const& event) {
@@ -609,11 +614,10 @@ void ClientApplication::render() {
 
   if (auto interfaceScale = config->get("interfaceScale").optFloat().value(); interfaceScale != 0)
     m_guiContext->setInterfaceScale(interfaceScale);
-#if STAR_SYSTEM_IOS
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
   else {
-    float displayScale = std::max(1.0f, std::round(m_guiContext->getDisplayScale()));
-    float logicalShortSide = std::min(m_guiContext->windowWidth(), m_guiContext->windowHeight()) / displayScale;
-    m_guiContext->setInterfaceScale(std::clamp(logicalShortSide / 720.0f, 0.75f, 1.25f));
+    float shortSide = std::min(m_guiContext->windowWidth(), m_guiContext->windowHeight());
+    m_guiContext->setInterfaceScale(std::clamp(shortSide / 500.0f, 1.35f, 2.4f));
   }
 #else
   else if (m_guiContext->windowWidth() >= m_crossoverRes[0] && m_guiContext->windowHeight() >= m_crossoverRes[1])

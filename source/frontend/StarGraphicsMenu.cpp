@@ -28,6 +28,13 @@ GraphicsMenu::GraphicsMenu(PaneManager* manager,UniverseClientPtr client)
   reader.registerCallback("resSlider", [=](Widget*) {
       Vec2U res = m_resList[fetchChild<SliderBarWidget>("resSlider")->val()];
       m_localChanges.set("fullscreenResolution", jsonFromVec2U(res));
+#if STAR_SYSTEM_ANDROID || STAR_SYSTEM_IOS
+      // On mobile the physical window always stays fullscreen, so the
+      // resolution slider controls the logical render canvas directly.
+      m_localChanges.set("fullscreen", true);
+      m_localChanges.set("borderless", false);
+      m_localChanges.set("maximized", false);
+#endif
       syncGui();
     });
   reader.registerCallback("interfaceScaleSlider", [=](Widget*) {
