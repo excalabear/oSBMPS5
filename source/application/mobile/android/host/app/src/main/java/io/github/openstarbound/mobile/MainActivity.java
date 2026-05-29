@@ -9,6 +9,7 @@ import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
 import android.hardware.Sensor;
+import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -491,6 +492,10 @@ public final class MainActivity extends SDLActivity {
             return false;
         }
 
+        if (enabled && !hasGyroSensor()) {
+            return false;
+        }
+
         if (mSurface == null) {
             return false;
         }
@@ -501,6 +506,24 @@ public final class MainActivity extends SDLActivity {
             }
         });
         return true;
+    }
+
+    public static boolean hasGyroSensor() {
+        MainActivity activity = instance();
+        if (activity == null) {
+            return false;
+        }
+
+        SensorManager sensorManager = (SensorManager)activity.getSystemService(SENSOR_SERVICE);
+        if (sensorManager == null) {
+            return false;
+        }
+
+        if (sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null) {
+            return true;
+        }
+
+        return Build.VERSION.SDK_INT >= 18 && sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE_UNCALIBRATED) != null;
     }
 
     public static String resolveModsDirectory(String fallbackModsDirectory) {

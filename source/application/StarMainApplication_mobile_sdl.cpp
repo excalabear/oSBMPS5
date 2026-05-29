@@ -204,6 +204,36 @@ bool setAndroidGyroSensorEnabled(bool enabled) {
 
   return result;
 }
+
+bool hasAndroidGyroSensor() {
+  JNIEnv* env = reinterpret_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  if (!env)
+    return false;
+
+  jobject activity = reinterpret_cast<jobject>(SDL_GetAndroidActivity());
+  if (!activity)
+    return false;
+
+  jclass cls = env->GetObjectClass(activity);
+  env->DeleteLocalRef(activity);
+  if (!cls)
+    return false;
+
+  jmethodID method = env->GetStaticMethodID(cls, "hasGyroSensor", "()Z");
+  if (!method) {
+    env->DeleteLocalRef(cls);
+    return false;
+  }
+
+  bool result = env->CallStaticBooleanMethod(cls, method);
+  env->DeleteLocalRef(cls);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return false;
+  }
+
+  return result;
+}
 #endif
 
 String defaultMobileStorageRoot() {
@@ -979,6 +1009,8 @@ public:
     : m_windowSize(windowSize), m_renderCanvasSize(renderCanvasSize), m_displayScalePtr(displayScale), m_safeAreaPtr(safeArea) {}
 
   void setConfig(MobileTouchConfig config) {
+    if (!m_gyroAvailable)
+      config.gyroEnabled = false;
     if (!config.directTouchGestures && m_config.directTouchGestures)
       cancelDirectTouchGestures();
     if (config.gyroEnabled && !m_config.gyroEnabled) {
@@ -990,6 +1022,16 @@ public:
       m_hasGyroInput = false;
     }
     m_config = config;
+  }
+
+  void setGyroAvailable(bool available) {
+    m_gyroAvailable = available;
+    if (!m_gyroAvailable) {
+      m_config.gyroEnabled = false;
+      m_gyroRuntimeEnabled = false;
+      m_lastGyroFrameMs = 0;
+      m_hasGyroInput = false;
+    }
   }
 
   void setElements(std::vector<MobileTouchElement> elements) {
@@ -1013,7 +1055,7 @@ public:
   }
 
   bool gyroSensorRequested() const {
-    return m_config.gyroEnabled;
+    return m_gyroAvailable && m_config.gyroEnabled;
   }
 
   void setGyroInput(std::array<float, 3> const& data, bool hasData, SDL_DisplayOrientation orientation) {
@@ -1146,7 +1188,7 @@ public:
         drawDPad(draw, ip(center), drawRadius, element.id, base, fill);
       } else {
         bool held = heldElement(element.id)
-            || (element.action.kind == MobileTouchActionKind::GyroToggle && m_config.gyroEnabled && m_gyroRuntimeEnabled);
+            || (element.action.kind == MobileTouchActionKind::GyroToggle && m_gyroAvailable && m_config.gyroEnabled && m_gyroRuntimeEnabled);
         drawButton(draw, ip(center), drawRadius * 0.55f, held, element.label.utf8Ptr(), base, fill);
       }
     }
@@ -1783,7 +1825,7 @@ private:
   void pressActionButton(MobileTouchElement const& element) {
     m_heldElements.add(element.id);
     if (element.action.kind == MobileTouchActionKind::GyroToggle) {
-      if (m_config.gyroEnabled) {
+      if (m_gyroAvailable && m_config.gyroEnabled) {
         m_gyroRuntimeEnabled = !m_gyroRuntimeEnabled;
         m_lastGyroFrameMs = 0;
         if (m_gyroRuntimeEnabled)
@@ -1995,6 +2037,7 @@ private:
   SafeAreaInsets* m_safeAreaPtr = nullptr;
   MobileTouchConfig m_config;
   std::vector<MobileTouchElement> m_elements = defaultTouchElements();
+  bool m_gyroAvailable = true;
   List<InputEvent> m_generatedEvents;
 
   StableHashMap<uint64_t, FingerState> m_fingers;
@@ -2618,6 +2661,8 @@ private:
     state.touchConfig.enabled = config.queryBool("touch.enabled", true);
     state.touchConfig.directTouchGestures = config.queryBool("touch.directTouchGestures", true);
     state.touchConfig.gyroEnabled = config.queryBool("touch.gyroEnabled", false);
+    if (!platformGyroAvailable())
+      state.touchConfig.gyroEnabled = false;
     state.touchConfig.opacity = config.queryFloat("touch.opacity", 0.35f);
     state.touchConfig.size = config.queryFloat("touch.size", 1.0f);
     state.touchConfig.deadzone = config.queryFloat("touch.deadzone", 0.15f);
@@ -2824,6 +2869,10 @@ private:
   }
 
   void renderTouchManager(LauncherState& state) {
+    bool gyroAvailable = platformGyroAvailable();
+    if (!gyroAvailable)
+      state.touchConfig.gyroEnabled = false;
+
     ImGui::Text("Touch Controls Manager");
     ImGui::Separator();
     if (ImGui::Button("Back to Launcher"))
@@ -2837,13 +2886,21 @@ private:
 
     ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
     ImGui::Checkbox("Enable direct screen touch gestures", &state.touchConfig.directTouchGestures);
+    ImGui::BeginDisabled(!gyroAvailable);
     ImGui::Checkbox("Enable gyro aim", &state.touchConfig.gyroEnabled);
+    ImGui::EndDisabled();
+    if (!gyroAvailable) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("No gyro found");
+    }
     ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
     ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
     ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
+    ImGui::BeginDisabled(!gyroAvailable);
     ImGui::SliderFloat("Gyro sensitivity", &state.touchConfig.gyroSensitivity, 0.10f, 5.0f);
     ImGui::Checkbox("Invert gyro X axis", &state.touchConfig.gyroInvertX);
     ImGui::Checkbox("Invert gyro Y axis", &state.touchConfig.gyroInvertY);
+    ImGui::EndDisabled();
 
     if (ImGui::Button("New Button")) {
       state.newTouchButtonPopup = true;
@@ -3408,6 +3465,7 @@ private:
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
       m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_renderCanvasSize, &m_displayScale, &m_safeArea);
+      m_touchAdapter->setGyroAvailable(platformGyroAvailable());
 
       if (auto configService = m_platformServices->launchConfigService()) {
         auto cfg = configService->loadLauncherConfig();
@@ -3415,6 +3473,8 @@ private:
         touch.enabled = cfg.queryBool("touch.enabled", true);
         touch.directTouchGestures = cfg.queryBool("touch.directTouchGestures", true);
         touch.gyroEnabled = cfg.queryBool("touch.gyroEnabled", false);
+        if (!platformGyroAvailable())
+          touch.gyroEnabled = false;
         touch.opacity = cfg.queryFloat("touch.opacity", 0.35f);
         touch.size = cfg.queryFloat("touch.size", 1.0f);
         touch.deadzone = cfg.queryFloat("touch.deadzone", 0.15f);
@@ -3607,7 +3667,34 @@ private:
     return SDL_GetCurrentDisplayOrientation(display);
   }
 
+  bool platformGyroAvailable() const {
+#ifdef STAR_SYSTEM_ANDROID
+    return hasAndroidGyroSensor();
+#else
+    int count = 0;
+    SDL_SensorID* sensors = SDL_GetSensors(&count);
+    if (!sensors)
+      return false;
+
+    bool available = false;
+    for (int i = 0; i < count; ++i) {
+      if (SDL_GetSensorTypeForID(sensors[i]) == SDL_SENSOR_GYRO) {
+        available = true;
+        break;
+      }
+    }
+    SDL_free(sensors);
+    return available;
+#endif
+  }
+
   void syncGyroSensor(bool enabled) {
+    if (enabled && !platformGyroAvailable()) {
+      if (m_touchAdapter)
+        m_touchAdapter->setGyroAvailable(false);
+      enabled = false;
+    }
+
     if (!enabled) {
       m_nextGyroSensorRetryMs = 0;
 #ifdef STAR_SYSTEM_ANDROID
@@ -3654,6 +3741,14 @@ private:
   void updateGyroInput() {
     if (!m_touchAdapter)
       return;
+
+    bool gyroAvailable = platformGyroAvailable();
+    m_touchAdapter->setGyroAvailable(gyroAvailable);
+    if (!gyroAvailable) {
+      syncGyroSensor(false);
+      m_touchAdapter->setGyroInput({}, false, currentDisplayOrientation());
+      return;
+    }
 
     if (m_touchAdapter->gyroSensorRequested()) {
       int64_t now = Time::monotonicMilliseconds();
