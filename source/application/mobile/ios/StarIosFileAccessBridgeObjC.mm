@@ -5,6 +5,7 @@
 #import <objc/runtime.h>
 
 #include "SDL3/SDL_video.h"
+#include <zlib.h>
 
 #if __has_include(<UniformTypeIdentifiers/UniformTypeIdentifiers.h>)
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -15,8 +16,13 @@
 #endif
 
 #include <dispatch/dispatch.h>
+#include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
 
 @interface StarIosDocumentPickerDelegate : NSObject <UIDocumentPickerDelegate>
 @property (nonatomic, strong) NSArray<NSURL*>* pickedUrls;
@@ -238,6 +244,8 @@ static bool isPakFileName(NSString* name) {
   return name && [name.lowercaseString hasSuffix:@".pak"];
 }
 
+static bool copyLocalFileToPathAtomic(NSString* sourcePath, NSString* targetPath);
+
 static NSString* uniqueTargetPath(NSString* parent, NSString* requestedName, bool treatAsDirectory) {
   NSString* safeName = sanitizedFileName(requestedName, treatAsDirectory ? @"mod_folder" : @"mod.pak");
   NSString* baseName = safeName;
@@ -432,6 +440,437 @@ static void importAllModsFromFolderUrl(NSURL* sourceDirUrl, NSString* targetMods
 
   if (startedScopedAccess)
     [sourceDirUrl stopAccessingSecurityScopedResource];
+}
+
+struct ZipCentralEntry {
+  std::string name;
+  uint32_t crc = 0;
+  uint32_t compressedSize = 0;
+  uint32_t uncompressedSize = 0;
+  uint32_t localOffset = 0;
+};
+
+static void writeZipU16(std::ofstream& out, uint16_t value) {
+  char bytes[2] = {
+    static_cast<char>(value & 0xff),
+    static_cast<char>((value >> 8) & 0xff)
+  };
+  out.write(bytes, sizeof(bytes));
+}
+
+static void writeZipU32(std::ofstream& out, uint32_t value) {
+  char bytes[4] = {
+    static_cast<char>(value & 0xff),
+    static_cast<char>((value >> 8) & 0xff),
+    static_cast<char>((value >> 16) & 0xff),
+    static_cast<char>((value >> 24) & 0xff)
+  };
+  out.write(bytes, sizeof(bytes));
+}
+
+static uint16_t readZipU16(std::vector<uint8_t> const& data, size_t offset) {
+  return (uint16_t)data[offset] | ((uint16_t)data[offset + 1] << 8);
+}
+
+static uint32_t readZipU32(std::vector<uint8_t> const& data, size_t offset) {
+  return (uint32_t)data[offset]
+      | ((uint32_t)data[offset + 1] << 8)
+      | ((uint32_t)data[offset + 2] << 16)
+      | ((uint32_t)data[offset + 3] << 24);
+}
+
+static std::string utf8String(NSString* value) {
+  char const* utf8 = value.UTF8String;
+  return utf8 ? std::string(utf8) : std::string();
+}
+
+static bool readFileBytes(NSString* path, std::vector<uint8_t>& out) {
+  std::ifstream input(utf8String(path), std::ios::binary);
+  if (!input)
+    return false;
+
+  input.seekg(0, std::ios::end);
+  std::streamoff length = input.tellg();
+  if (length < 0 || length > 0x7fffffff)
+    return false;
+  input.seekg(0, std::ios::beg);
+
+  out.resize((size_t)length);
+  if (!out.empty())
+    input.read(reinterpret_cast<char*>(out.data()), (std::streamsize)out.size());
+  return input.good() || input.eof();
+}
+
+static bool zipEntryNameIsSafe(std::string const& name) {
+  if (name.empty() || name[0] == '/' || name.find(':') != std::string::npos)
+    return false;
+
+  size_t start = 0;
+  while (start <= name.size()) {
+    size_t slash = name.find('/', start);
+    size_t end = slash == std::string::npos ? name.size() : slash;
+    std::string part = name.substr(start, end - start);
+    if (part == "..")
+      return false;
+    if (slash == std::string::npos)
+      break;
+    start = slash + 1;
+  }
+
+  return true;
+}
+
+static bool addStoredFileToZip(std::ofstream& out, NSString* sourcePath, std::string const& entryName, std::vector<ZipCentralEntry>& centralEntries) {
+  if (!zipEntryNameIsSafe(entryName))
+    return false;
+
+  std::vector<uint8_t> bytes;
+  if (!readFileBytes(sourcePath, bytes) || bytes.size() > 0xffffffffu)
+    return false;
+
+  std::streampos offset = out.tellp();
+  if (offset < 0 || offset > 0xffffffff)
+    return false;
+
+  uint32_t crc = (uint32_t)crc32(0L, bytes.empty() ? nullptr : bytes.data(), (uInt)bytes.size());
+  uint32_t size = (uint32_t)bytes.size();
+
+  writeZipU32(out, 0x04034b50);
+  writeZipU16(out, 20);
+  writeZipU16(out, 0x0800);
+  writeZipU16(out, 0);
+  writeZipU16(out, 0);
+  writeZipU16(out, 0);
+  writeZipU32(out, crc);
+  writeZipU32(out, size);
+  writeZipU32(out, size);
+  writeZipU16(out, (uint16_t)entryName.size());
+  writeZipU16(out, 0);
+  out.write(entryName.data(), (std::streamsize)entryName.size());
+  if (!bytes.empty())
+    out.write(reinterpret_cast<char const*>(bytes.data()), (std::streamsize)bytes.size());
+
+  centralEntries.push_back({entryName, crc, size, size, (uint32_t)offset});
+  return out.good();
+}
+
+static bool addDirectoryToSaveZip(std::ofstream& out, NSString* rootPath, NSString* directoryPath, std::string const& prefix, std::vector<ZipCentralEntry>& centralEntries) {
+  NSFileManager* fm = NSFileManager.defaultManager;
+  BOOL isDirectory = NO;
+  if (![fm fileExistsAtPath:directoryPath isDirectory:&isDirectory] || !isDirectory)
+    return true;
+
+  NSDirectoryEnumerator<NSString*>* enumerator = [fm enumeratorAtPath:directoryPath];
+  for (NSString* relative in enumerator) {
+    NSString* fullPath = [directoryPath stringByAppendingPathComponent:relative];
+    BOOL childIsDirectory = NO;
+    if (![fm fileExistsAtPath:fullPath isDirectory:&childIsDirectory] || childIsDirectory)
+      continue;
+
+    NSString* normalized = [relative stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+    std::string entryName = prefix + "/" + utf8String(normalized);
+    if (!addStoredFileToZip(out, fullPath, entryName, centralEntries))
+      return false;
+  }
+  return true;
+}
+
+static bool createSaveZip(NSString* storageRoot, NSString* zipPath) {
+  if (!storageRoot || storageRoot.length == 0 || !zipPath || zipPath.length == 0)
+    return false;
+
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSString* playerPath = [storageRoot stringByAppendingPathComponent:@"player"];
+  NSString* universePath = [storageRoot stringByAppendingPathComponent:@"universe"];
+  BOOL playerIsDir = NO;
+  BOOL universeIsDir = NO;
+  bool hasSaveData = ([fm fileExistsAtPath:playerPath isDirectory:&playerIsDir] && playerIsDir)
+      || ([fm fileExistsAtPath:universePath isDirectory:&universeIsDir] && universeIsDir);
+  if (!hasSaveData)
+    return false;
+
+  if (!ensureDirectory(zipPath.stringByDeletingLastPathComponent))
+    return false;
+
+  std::ofstream out(utf8String(zipPath), std::ios::binary | std::ios::trunc);
+  if (!out)
+    return false;
+
+  std::vector<ZipCentralEntry> centralEntries;
+  if (!addDirectoryToSaveZip(out, playerPath, playerPath, "player", centralEntries))
+    return false;
+  if (!addDirectoryToSaveZip(out, universePath, universePath, "universe", centralEntries))
+    return false;
+
+  std::streampos centralOffset = out.tellp();
+  if (centralOffset < 0 || centralOffset > 0xffffffff)
+    return false;
+
+  for (auto const& entry : centralEntries) {
+    writeZipU32(out, 0x02014b50);
+    writeZipU16(out, 20);
+    writeZipU16(out, 20);
+    writeZipU16(out, 0x0800);
+    writeZipU16(out, 0);
+    writeZipU16(out, 0);
+    writeZipU16(out, 0);
+    writeZipU32(out, entry.crc);
+    writeZipU32(out, entry.compressedSize);
+    writeZipU32(out, entry.uncompressedSize);
+    writeZipU16(out, (uint16_t)entry.name.size());
+    writeZipU16(out, 0);
+    writeZipU16(out, 0);
+    writeZipU16(out, 0);
+    writeZipU16(out, 0);
+    writeZipU32(out, 0);
+    writeZipU32(out, entry.localOffset);
+    out.write(entry.name.data(), (std::streamsize)entry.name.size());
+  }
+
+  std::streampos centralEnd = out.tellp();
+  if (centralEnd < centralOffset || centralEnd > 0xffffffff)
+    return false;
+
+  writeZipU32(out, 0x06054b50);
+  writeZipU16(out, 0);
+  writeZipU16(out, 0);
+  writeZipU16(out, (uint16_t)centralEntries.size());
+  writeZipU16(out, (uint16_t)centralEntries.size());
+  writeZipU32(out, (uint32_t)(centralEnd - centralOffset));
+  writeZipU32(out, (uint32_t)centralOffset);
+  writeZipU16(out, 0);
+  return out.good();
+}
+
+static bool inflateRawDeflate(uint8_t const* source, size_t sourceSize, std::vector<uint8_t>& out, size_t expectedSize) {
+  out.resize(expectedSize);
+  z_stream stream = {};
+  if (inflateInit2(&stream, -MAX_WBITS) != Z_OK)
+    return false;
+
+  stream.next_in = const_cast<Bytef*>(source);
+  stream.avail_in = (uInt)sourceSize;
+  stream.next_out = out.data();
+  stream.avail_out = (uInt)out.size();
+
+  int result = inflate(&stream, Z_FINISH);
+  bool ok = result == Z_STREAM_END && stream.total_out == expectedSize;
+  inflateEnd(&stream);
+  return ok;
+}
+
+static bool writeBytesToPathAtomic(std::vector<uint8_t> const& bytes, NSString* targetPath) {
+  if (!targetPath || targetPath.length == 0)
+    return false;
+  if (!ensureDirectory(targetPath.stringByDeletingLastPathComponent))
+    return false;
+
+  NSString* tempPath = [targetPath stringByAppendingString:@".tmp"];
+  NSFileManager* fm = NSFileManager.defaultManager;
+  [fm removeItemAtPath:tempPath error:nil];
+
+  std::ofstream output(utf8String(tempPath), std::ios::binary | std::ios::trunc);
+  if (!output)
+    return false;
+  if (!bytes.empty())
+    output.write(reinterpret_cast<char const*>(bytes.data()), (std::streamsize)bytes.size());
+  output.close();
+  if (!output.good()) {
+    [fm removeItemAtPath:tempPath error:nil];
+    return false;
+  }
+
+  [fm removeItemAtPath:targetPath error:nil];
+  if (![fm moveItemAtPath:tempPath toPath:targetPath error:nil]) {
+    [fm removeItemAtPath:tempPath error:nil];
+    return false;
+  }
+  return true;
+}
+
+static bool unzipSaveArchive(NSString* zipPath, NSString* tempRoot) {
+  std::vector<uint8_t> data;
+  if (!readFileBytes(zipPath, data) || data.size() < 22)
+    return false;
+
+  size_t searchStart = data.size() > 65557 ? data.size() - 65557 : 0;
+  size_t eocd = std::string::npos;
+  for (size_t i = data.size() - 22; i + 1 > searchStart; --i) {
+    if (readZipU32(data, i) == 0x06054b50) {
+      eocd = i;
+      break;
+    }
+    if (i == 0)
+      break;
+  }
+  if (eocd == std::string::npos)
+    return false;
+
+  uint16_t entryCount = readZipU16(data, eocd + 10);
+  uint32_t centralOffset = readZipU32(data, eocd + 16);
+  if (centralOffset >= data.size())
+    return false;
+
+  bool extractedAny = false;
+  size_t offset = centralOffset;
+  for (uint16_t i = 0; i < entryCount; ++i) {
+    if (offset + 46 > data.size() || readZipU32(data, offset) != 0x02014b50)
+      return false;
+
+    uint16_t flags = readZipU16(data, offset + 8);
+    uint16_t method = readZipU16(data, offset + 10);
+    uint32_t crc = readZipU32(data, offset + 16);
+    uint32_t compressedSize = readZipU32(data, offset + 20);
+    uint32_t uncompressedSize = readZipU32(data, offset + 24);
+    uint16_t nameLength = readZipU16(data, offset + 28);
+    uint16_t extraLength = readZipU16(data, offset + 30);
+    uint16_t commentLength = readZipU16(data, offset + 32);
+    uint32_t localOffset = readZipU32(data, offset + 42);
+    if ((flags & 0x0001) != 0 || compressedSize == 0xffffffffu || uncompressedSize == 0xffffffffu)
+      return false;
+    if (offset + 46 + nameLength + extraLength + commentLength > data.size())
+      return false;
+
+    std::string name(reinterpret_cast<char const*>(data.data() + offset + 46), nameLength);
+    std::replace(name.begin(), name.end(), '\\', '/');
+    offset += 46 + nameLength + extraLength + commentLength;
+
+    bool isDirectory = !name.empty() && name.back() == '/';
+    if (!zipEntryNameIsSafe(name))
+      return false;
+    if (isDirectory)
+      continue;
+
+    if (localOffset + 30 > data.size() || readZipU32(data, localOffset) != 0x04034b50)
+      return false;
+    uint16_t localNameLength = readZipU16(data, localOffset + 26);
+    uint16_t localExtraLength = readZipU16(data, localOffset + 28);
+    size_t dataOffset = (size_t)localOffset + 30 + localNameLength + localExtraLength;
+    if (dataOffset + compressedSize > data.size())
+      return false;
+
+    std::vector<uint8_t> uncompressed;
+    if (method == 0) {
+      if (compressedSize != uncompressedSize)
+        return false;
+      uncompressed.assign(data.begin() + dataOffset, data.begin() + dataOffset + compressedSize);
+    } else if (method == 8) {
+      if (!inflateRawDeflate(data.data() + dataOffset, compressedSize, uncompressed, uncompressedSize))
+        return false;
+    } else {
+      return false;
+    }
+
+    uint32_t actualCrc = (uint32_t)crc32(0L, uncompressed.empty() ? nullptr : uncompressed.data(), (uInt)uncompressed.size());
+    if (actualCrc != crc)
+      return false;
+
+    NSString* relative = [NSString stringWithUTF8String:name.c_str()];
+    if (!relative)
+      return false;
+    NSString* targetPath = [tempRoot stringByAppendingPathComponent:relative];
+    if (!writeBytesToPathAtomic(uncompressed, targetPath))
+      return false;
+    extractedAny = true;
+  }
+
+  return extractedAny;
+}
+
+static bool hasSavePayload(NSString* directory) {
+  NSFileManager* fm = NSFileManager.defaultManager;
+  BOOL isDirectory = NO;
+  NSString* player = [directory stringByAppendingPathComponent:@"player"];
+  if ([fm fileExistsAtPath:player isDirectory:&isDirectory] && isDirectory)
+    return true;
+  NSString* universe = [directory stringByAppendingPathComponent:@"universe"];
+  return [fm fileExistsAtPath:universe isDirectory:&isDirectory] && isDirectory;
+}
+
+static NSString* findSavePayloadRoot(NSString* directory, int depth) {
+  if (!directory || depth < 0)
+    return nil;
+  if (hasSavePayload(directory))
+    return directory;
+
+  NSArray<NSString*>* children = [NSFileManager.defaultManager contentsOfDirectoryAtPath:directory error:nil];
+  for (NSString* child in children) {
+    NSString* childPath = [directory stringByAppendingPathComponent:child];
+    BOOL isDirectory = NO;
+    if ([NSFileManager.defaultManager fileExistsAtPath:childPath isDirectory:&isDirectory] && isDirectory) {
+      NSString* found = findSavePayloadRoot(childPath, depth - 1);
+      if (found)
+        return found;
+    }
+  }
+  return nil;
+}
+
+static bool copyLocalTree(NSString* source, NSString* target) {
+  NSFileManager* fm = NSFileManager.defaultManager;
+  BOOL isDirectory = NO;
+  if (![fm fileExistsAtPath:source isDirectory:&isDirectory])
+    return false;
+  if (isDirectory) {
+    if (!ensureDirectory(target))
+      return false;
+    NSArray<NSString*>* children = [fm contentsOfDirectoryAtPath:source error:nil];
+    for (NSString* child in children) {
+      if (!copyLocalTree([source stringByAppendingPathComponent:child], [target stringByAppendingPathComponent:child]))
+        return false;
+    }
+    return true;
+  }
+  return copyLocalFileToPathAtomic(source, target);
+}
+
+static bool installSavePayload(NSString* payloadRoot, NSString* storageRoot) {
+  if (!hasSavePayload(payloadRoot) || !ensureDirectory(storageRoot))
+    return false;
+
+  NSArray<NSString*>* saveDirectories = @[@"player", @"universe"];
+  NSString* backupRoot = [storageRoot stringByAppendingPathComponent:[NSString stringWithFormat:@".save-import-backup-%lld", (long long)[NSDate date].timeIntervalSince1970]];
+  NSMutableArray<NSString*>* moved = [NSMutableArray array];
+  bool success = false;
+
+  @try {
+    NSFileManager* fm = NSFileManager.defaultManager;
+    for (NSString* name in saveDirectories) {
+      NSString* source = [payloadRoot stringByAppendingPathComponent:name];
+      BOOL isDirectory = NO;
+      if (![fm fileExistsAtPath:source isDirectory:&isDirectory] || !isDirectory)
+        continue;
+
+      NSString* target = [storageRoot stringByAppendingPathComponent:name];
+      if ([fm fileExistsAtPath:target]) {
+        if (!ensureDirectory(backupRoot))
+          return false;
+        NSString* backup = [backupRoot stringByAppendingPathComponent:name];
+        if (![fm moveItemAtPath:target toPath:backup error:nil])
+          return false;
+        [moved addObject:name];
+      }
+
+      if (!copyLocalTree(source, target))
+        return false;
+    }
+
+    success = true;
+    return true;
+  } @finally {
+    NSFileManager* fm = NSFileManager.defaultManager;
+    if (success) {
+      [fm removeItemAtPath:backupRoot error:nil];
+    } else {
+      for (NSString* name in moved) {
+        NSString* target = [storageRoot stringByAppendingPathComponent:name];
+        NSString* backup = [backupRoot stringByAppendingPathComponent:name];
+        [fm removeItemAtPath:target error:nil];
+        [fm moveItemAtPath:backup toPath:target error:nil];
+      }
+      [fm removeItemAtPath:backupRoot error:nil];
+    }
+  }
 }
 
 static NSString* bundledOpensbPath() {
@@ -913,6 +1352,118 @@ extern "C" bool StarIosBridge_openModsDirectory(char const* modsDirectory) {
     }
   } @catch (NSException* exception) {
     NSLog(@"[OpenStarbound][iOSBridge] openModsDirectory exception: %@ (%@)", exception.name, exception.reason);
+    return false;
+  }
+}
+
+extern "C" bool StarIosBridge_openSaveDirectory(char const* storageRootDirectory) {
+  @try {
+    @autoreleasepool {
+      NSString* resolved = toNSString(storageRootDirectory);
+      if (resolved.length == 0 || !ensureDirectory(resolved))
+        return false;
+
+      __block bool presented = false;
+      runOnMainSync(^{
+        UIViewController* presenter = topViewController();
+        if (!presenter)
+          return;
+
+        NSURL* saveUrl = [NSURL fileURLWithPath:resolved isDirectory:YES];
+        if (@available(iOS 14.0, *)) {
+#if STAR_IOS_HAS_UNIFORM_TYPES
+          UIDocumentPickerViewController* picker = [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:@[UTTypeFolder] asCopy:NO];
+          picker.directoryURL = saveUrl;
+          picker.allowsMultipleSelection = false;
+          picker.modalPresentationStyle = UIModalPresentationFormSheet;
+          [presenter presentViewController:picker animated:YES completion:nil];
+          presented = true;
+          return;
+#endif
+        }
+
+        UIActivityViewController* activity = [[UIActivityViewController alloc] initWithActivityItems:@[saveUrl] applicationActivities:nil];
+        [presenter presentViewController:activity animated:YES completion:nil];
+        presented = true;
+      });
+
+      return presented;
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] openSaveDirectory exception: %@ (%@)", exception.name, exception.reason);
+    return false;
+  }
+}
+
+extern "C" bool StarIosBridge_importSaveZip(char const* storageRootDirectory) {
+  @try {
+    @autoreleasepool {
+      NSString* storageRoot = toNSString(storageRootDirectory);
+      if (storageRoot.length == 0 || !ensureDirectory(storageRoot))
+        return false;
+
+      NSArray<NSURL*>* picked = presentOpenPicker(PickerMode::File);
+      NSURL* selected = picked.firstObject;
+      if (!selected)
+        return false;
+
+      NSString* tempZip = [storageRoot stringByAppendingPathComponent:[NSString stringWithFormat:@".save-import-%lld.zip", (long long)[NSDate date].timeIntervalSince1970]];
+      NSString* tempRoot = [storageRoot stringByAppendingPathComponent:[NSString stringWithFormat:@".save-import-%lld", (long long)[NSDate date].timeIntervalSince1970]];
+
+      NSFileManager* fm = NSFileManager.defaultManager;
+      @try {
+        if (!streamCopyUrlToPathAtomic(selected, tempZip))
+          return false;
+        if (!ensureDirectory(tempRoot))
+          return false;
+        if (!unzipSaveArchive(tempZip, tempRoot))
+          return false;
+        NSString* payloadRoot = findSavePayloadRoot(tempRoot, 3);
+        if (!payloadRoot)
+          return false;
+        return installSavePayload(payloadRoot, storageRoot);
+      } @finally {
+        [fm removeItemAtPath:tempZip error:nil];
+        [fm removeItemAtPath:tempRoot error:nil];
+      }
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] importSaveZip exception: %@ (%@)", exception.name, exception.reason);
+    return false;
+  }
+}
+
+extern "C" bool StarIosBridge_exportSaveZip(char const* storageRootDirectory) {
+  @try {
+    @autoreleasepool {
+      NSString* storageRoot = toNSString(storageRootDirectory);
+      if (storageRoot.length == 0)
+        return false;
+
+      NSString* exportDir = [storageRoot stringByAppendingPathComponent:@"save-exports"];
+      NSString* zipPath = [exportDir stringByAppendingPathComponent:[NSString stringWithFormat:@"openstarbound-save-%lld.zip", (long long)[NSDate date].timeIntervalSince1970]];
+      if (!createSaveZip(storageRoot, zipPath))
+        return false;
+
+      NSURL* zipUrl = [NSURL fileURLWithPath:zipPath isDirectory:NO];
+      __block bool presented = false;
+      runOnMainSync(^{
+        UIViewController* presenter = topViewController();
+        if (!presenter)
+          return;
+
+        UIActivityViewController* activity = [[UIActivityViewController alloc] initWithActivityItems:@[zipUrl] applicationActivities:nil];
+        activity.popoverPresentationController.sourceView = presenter.view;
+        activity.popoverPresentationController.sourceRect = presenter.view.bounds;
+        activity.popoverPresentationController.permittedArrowDirections = 0;
+        [presenter presentViewController:activity animated:YES completion:nil];
+        presented = true;
+      });
+
+      return presented;
+    }
+  } @catch (NSException* exception) {
+    NSLog(@"[OpenStarbound][iOSBridge] exportSaveZip exception: %@ (%@)", exception.name, exception.reason);
     return false;
   }
 }

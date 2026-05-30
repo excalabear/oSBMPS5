@@ -993,6 +993,7 @@ struct LauncherState {
   int newTouchActionIndex = 0;
   float newTouchButtonSize = 1.0f;
   bool modManagerOpen = false;
+  bool saveManagerOpen = false;
   bool modListDirty = true;
   bool modShowPackedPaks = true;
   bool modShowUnpackedFolders = true;
@@ -3174,6 +3175,67 @@ private:
         }
         ImGui::EndPopup();
       }
+    } else if (state.saveManagerOpen) {
+      ImGui::Text("Save Manager");
+      ImGui::TextWrapped("Open, import, and export player and universe save data.");
+      ImGui::Separator();
+
+      if (ImGui::Button("Back to Launcher"))
+        state.saveManagerOpen = false;
+
+      ImGui::TextWrapped("Save location: %s", m_storageRoot.utf8Ptr());
+      ImGui::TextWrapped("Exports include player and universe save data only. Assets and mods are not included.");
+
+      if (ImGui::Button("Open Save Folder")) {
+        runLauncherAction("Open save folder", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            if (svc->openSaveLocationInSystemBrowser()) {
+              state.lastStatus = "Save folder opened.";
+              state.lastError.clear();
+            } else {
+              state.lastStatus = "Open save folder unavailable.";
+              state.lastError = "Could not open the native file browser for the save folder.";
+            }
+          } else {
+            state.lastStatus = "Open save folder unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
+
+      if (ImGui::Button("Import Save Zip")) {
+        runLauncherAction("Import save zip", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            if (svc->importSaveZip()) {
+              state.lastStatus = "Save zip import finished.";
+              state.lastError.clear();
+            } else {
+              state.lastStatus = "No save zip imported.";
+              state.lastError = "No .zip selected, invalid save archive, or import failed.";
+            }
+          } else {
+            state.lastStatus = "Import unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Export Save Zip")) {
+        runLauncherAction("Export save zip", [&]() {
+          if (auto svc = m_platformServices->externalFileAccessService()) {
+            if (svc->exportSaveZip()) {
+              state.lastStatus = "Save export opened.";
+              state.lastError.clear();
+            } else {
+              state.lastStatus = "Save export unavailable.";
+              state.lastError = "No save data found or the native share sheet could not be opened.";
+            }
+          } else {
+            state.lastStatus = "Export unavailable.";
+            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+          }
+        });
+      }
     } else {
       ImGui::TextWrapped("Configure assets and controls before launching.");
       ImGui::Separator();
@@ -3205,6 +3267,9 @@ private:
         state.modManagerOpen = true;
         state.modListDirty = true;
       }
+      ImGui::SameLine();
+      if (ImGui::Button("Save Manager"))
+        state.saveManagerOpen = true;
       ImGui::SameLine();
       if (ImGui::Button("Touch Controls")) {
         state.touchManagerOpen = true;

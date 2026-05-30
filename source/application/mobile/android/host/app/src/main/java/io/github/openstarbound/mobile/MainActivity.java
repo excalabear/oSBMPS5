@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 public final class MainActivity extends SDLActivity {
@@ -48,6 +49,7 @@ public final class MainActivity extends SDLActivity {
     private static final int REQUEST_PICK_MOD_PAK = 0x5002;
     private static final int REQUEST_PICK_MOD_FOLDER = 0x5003;
     private static final int REQUEST_PICK_MODS_FOLDER = 0x5004;
+    private static final int REQUEST_PICK_SAVE_ZIP = 0x5005;
     private static final Object PICKER_LOCK = new Object();
     private static final Object SAFE_AREA_LOCK = new Object();
     private static final long PICKER_TIMEOUT_SECONDS = 180;
@@ -57,8 +59,10 @@ public final class MainActivity extends SDLActivity {
     private static CountDownLatch sLatch;
     private static String sTargetPackedPak;
     private static String sTargetModsDir;
+    private static String sTargetSaveRoot;
     private static String sPickedPakResult;
     private static ArrayList<String> sImportedMods;
+    private static boolean sSaveImportResult;
     private OnBackInvokedCallback mBackCallback;
 
     @Override
@@ -328,8 +332,10 @@ public final class MainActivity extends SDLActivity {
             sLatch = latch;
             sTargetPackedPak = targetPath;
             sTargetModsDir = null;
+            sTargetSaveRoot = null;
             sPickedPakResult = null;
             sImportedMods = new ArrayList<>();
+            sSaveImportResult = false;
         }
 
         activity.runOnUiThread(() -> {
@@ -361,8 +367,10 @@ public final class MainActivity extends SDLActivity {
             sLatch = latch;
             sTargetPackedPak = null;
             sTargetModsDir = modsDirectory;
+            sTargetSaveRoot = null;
             sPickedPakResult = null;
             sImportedMods = new ArrayList<>();
+            sSaveImportResult = false;
         }
 
         activity.runOnUiThread(() -> activity.startActivityForResult(intent, requestCode));
@@ -400,6 +408,43 @@ public final class MainActivity extends SDLActivity {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         return runModImportRequest(activity, modsDirectory, REQUEST_PICK_MODS_FOLDER, intent);
+    }
+
+    public static boolean importSaveZip(String storageRoot) {
+        MainActivity activity = instance();
+        if (activity == null || storageRoot == null || storageRoot.isEmpty()) {
+            return false;
+        }
+
+        CountDownLatch latch = new CountDownLatch(1);
+        synchronized (PICKER_LOCK) {
+            sLatch = latch;
+            sTargetPackedPak = null;
+            sTargetModsDir = null;
+            sTargetSaveRoot = storageRoot;
+            sPickedPakResult = null;
+            sImportedMods = new ArrayList<>();
+            sSaveImportResult = false;
+        }
+
+        activity.runOnUiThread(() -> {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("application/zip");
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] { "application/zip", "application/x-zip-compressed", "*/*" });
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            activity.startActivityForResult(intent, REQUEST_PICK_SAVE_ZIP);
+        });
+
+        try {
+            latch.await(PICKER_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+
+        synchronized (PICKER_LOCK) {
+            return sSaveImportResult;
+        }
     }
 
     private static Uri externalStorageDocumentUriForPath(String absolutePath) {
@@ -628,6 +673,265 @@ public final class MainActivity extends SDLActivity {
         return copiedAny;
     }
 
+    private static boolean deleteRecursively(File file) {
+        if (file == null || !file.exists()) {
+            return true;
+        }
+        if (file.isDirectory()) {
+            File[] children = file.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    if (!deleteRecursively(child)) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return file.delete() || !file.exists();
+    }
+
+    private static boolean copyLocalTree(File source, File target) {
+        if (source == null || target == null || !source.exists()) {
+            return false;
+        }
+
+        if (source.isDirectory()) {
+            if (!target.exists() && !target.mkdirs()) {
+                return false;
+            }
+            File[] children = source.listFiles();
+            if (children == null) {
+                return true;
+            }
+            for (File child : children) {
+                if (!copyLocalTree(child, new File(target, child.getName()))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        File parent = target.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            return false;
+        }
+        File tmp = new File(target.getAbsolutePath() + ".tmp");
+        try (FileInputStream in = new FileInputStream(source);
+             FileOutputStream out = new FileOutputStream(tmp, false)) {
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+            }
+            out.flush();
+        } catch (IOException e) {
+            tmp.delete();
+            return false;
+        }
+        if (target.exists() && !deleteRecursively(target)) {
+            tmp.delete();
+            return false;
+        }
+        if (!tmp.renameTo(target)) {
+            tmp.delete();
+            return false;
+        }
+        return true;
+    }
+
+    private static String safeZipEntryPath(String entryName) {
+        if (entryName == null || entryName.isEmpty()) {
+            return null;
+        }
+        String normalized = entryName.replace('\\', '/');
+        while (normalized.startsWith("./")) {
+            normalized = normalized.substring(2);
+        }
+        if (normalized.startsWith("/") || normalized.contains(":")) {
+            return null;
+        }
+        String[] parts = normalized.split("/");
+        ArrayList<String> safeParts = new ArrayList<>();
+        for (String part : parts) {
+            if (part == null || part.isEmpty() || ".".equals(part)) {
+                continue;
+            }
+            if ("..".equals(part)) {
+                return null;
+            }
+            safeParts.add(sanitizeFileName(part, "save"));
+        }
+        if (safeParts.isEmpty()) {
+            return null;
+        }
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < safeParts.size(); ++i) {
+            if (i > 0) {
+                builder.append(File.separatorChar);
+            }
+            builder.append(safeParts.get(i));
+        }
+        return builder.toString();
+    }
+
+    private static boolean unzipSaveArchive(MainActivity activity, Uri zipUri, File tempRoot) {
+        if (activity == null || zipUri == null || tempRoot == null) {
+            return false;
+        }
+        if (!tempRoot.exists() && !tempRoot.mkdirs()) {
+            return false;
+        }
+
+        try (InputStream raw = activity.getContentResolver().openInputStream(zipUri);
+             ZipInputStream zip = raw == null ? null : new ZipInputStream(raw)) {
+            if (zip == null) {
+                return false;
+            }
+
+            byte[] buffer = new byte[64 * 1024];
+            ZipEntry entry;
+            boolean extractedAny = false;
+            while ((entry = zip.getNextEntry()) != null) {
+                String safePath = safeZipEntryPath(entry.getName());
+                if (safePath == null) {
+                    zip.closeEntry();
+                    return false;
+                }
+
+                File target = new File(tempRoot, safePath);
+                String targetPath = target.getCanonicalPath();
+                String rootPath = tempRoot.getCanonicalPath();
+                if (!targetPath.equals(rootPath) && !targetPath.startsWith(rootPath + File.separator)) {
+                    zip.closeEntry();
+                    return false;
+                }
+
+                if (entry.isDirectory()) {
+                    if (!target.exists() && !target.mkdirs()) {
+                        zip.closeEntry();
+                        return false;
+                    }
+                } else {
+                    File parent = target.getParentFile();
+                    if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                        zip.closeEntry();
+                        return false;
+                    }
+                    try (FileOutputStream out = new FileOutputStream(target, false)) {
+                        int read;
+                        while ((read = zip.read(buffer)) > 0) {
+                            out.write(buffer, 0, read);
+                        }
+                    }
+                    extractedAny = true;
+                }
+                zip.closeEntry();
+            }
+            return extractedAny;
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static boolean hasSavePayload(File directory) {
+        return directory != null && directory.isDirectory()
+            && (new File(directory, "player").isDirectory() || new File(directory, "universe").isDirectory());
+    }
+
+    private static File findSavePayloadRoot(File directory, int depth) {
+        if (directory == null || !directory.isDirectory() || depth < 0) {
+            return null;
+        }
+        if (hasSavePayload(directory)) {
+            return directory;
+        }
+
+        File[] children = directory.listFiles();
+        if (children == null) {
+            return null;
+        }
+
+        for (File child : children) {
+            if (child != null && child.isDirectory()) {
+                File found = findSavePayloadRoot(child, depth - 1);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean installSavePayload(File payloadRoot, File storageRoot) {
+        if (!hasSavePayload(payloadRoot) || storageRoot == null) {
+            return false;
+        }
+        if (!storageRoot.exists() && !storageRoot.mkdirs()) {
+            return false;
+        }
+
+        String[] saveDirectories = new String[] { "player", "universe" };
+        File backupRoot = new File(storageRoot, ".save-import-backup-" + System.currentTimeMillis());
+        ArrayList<String> moved = new ArrayList<>();
+        boolean success = false;
+
+        try {
+            for (String name : saveDirectories) {
+                File source = new File(payloadRoot, name);
+                if (!source.isDirectory()) {
+                    continue;
+                }
+
+                File target = new File(storageRoot, name);
+                if (target.exists()) {
+                    if (!backupRoot.exists() && !backupRoot.mkdirs()) {
+                        return false;
+                    }
+                    File backup = new File(backupRoot, name);
+                    if (!target.renameTo(backup)) {
+                        return false;
+                    }
+                    moved.add(name);
+                }
+
+                if (!copyLocalTree(source, target)) {
+                    return false;
+                }
+            }
+
+            success = true;
+            return true;
+        } finally {
+            if (success) {
+                deleteRecursively(backupRoot);
+            } else if (backupRoot.exists()) {
+                for (String name : moved) {
+                    File target = new File(storageRoot, name);
+                    File backup = new File(backupRoot, name);
+                    if (backup.exists()) {
+                        deleteRecursively(target);
+                        backup.renameTo(target);
+                    }
+                }
+                deleteRecursively(backupRoot);
+            }
+        }
+    }
+
+    private static boolean importSaveZipFromUri(MainActivity activity, Uri zipUri, String storageRoot) {
+        File root = new File(storageRoot);
+        File tempRoot = new File(root, ".save-import-" + System.currentTimeMillis());
+        try {
+            if (!unzipSaveArchive(activity, zipUri, tempRoot)) {
+                return false;
+            }
+            File payloadRoot = findSavePayloadRoot(tempRoot, 3);
+            return payloadRoot != null && installSavePayload(payloadRoot, root);
+        } finally {
+            deleteRecursively(tempRoot);
+        }
+    }
+
     private static void importSingleModFolderFromTree(
         MainActivity activity,
         DocumentFile pickedTree,
@@ -688,25 +992,20 @@ public final class MainActivity extends SDLActivity {
         }
     }
 
-    public static boolean openModsDirectory(String modsDirectory) {
-        MainActivity activity = instance();
-        if (activity == null) {
+    private static boolean openDirectoryInSystemBrowser(MainActivity activity, File directory) {
+        if (activity == null || directory == null) {
             return false;
         }
-
-        String resolvedModsDir = resolveModsDirectory(modsDirectory);
-        if (resolvedModsDir == null || resolvedModsDir.isEmpty()) {
+        if (!directory.exists() && !directory.mkdirs()) {
             return false;
         }
-
-        File modsDirFile = new File(resolvedModsDir);
-        if (!modsDirFile.exists() && !modsDirFile.mkdirs()) {
+        if (!directory.isDirectory()) {
             return false;
         }
 
         activity.runOnUiThread(() -> {
             try {
-                Uri documentUri = externalStorageDocumentUriForPath(modsDirFile.getAbsolutePath());
+                Uri documentUri = externalStorageDocumentUriForPath(directory.getAbsolutePath());
 
                 if (documentUri != null) {
                     Intent documentIntent = new Intent(Intent.ACTION_VIEW);
@@ -722,7 +1021,7 @@ public final class MainActivity extends SDLActivity {
                 Uri uri = FileProvider.getUriForFile(
                     activity,
                     activity.getPackageName() + ".fileprovider",
-                    modsDirFile
+                    directory
                 );
 
                 Intent intent = new Intent(Intent.ACTION_VIEW);
@@ -747,7 +1046,7 @@ public final class MainActivity extends SDLActivity {
                 Intent fallback = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                 fallback.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                 fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                Uri fallbackUri = externalStorageDocumentUriForPath(modsDirFile.getAbsolutePath());
+                Uri fallbackUri = externalStorageDocumentUriForPath(directory.getAbsolutePath());
                 if (Build.VERSION.SDK_INT >= 26 && fallbackUri != null) {
                     fallback.putExtra(DocumentsContract.EXTRA_INITIAL_URI, fallbackUri);
                 }
@@ -756,6 +1055,29 @@ public final class MainActivity extends SDLActivity {
             }
         });
         return true;
+    }
+
+    public static boolean openModsDirectory(String modsDirectory) {
+        MainActivity activity = instance();
+        if (activity == null) {
+            return false;
+        }
+
+        String resolvedModsDir = resolveModsDirectory(modsDirectory);
+        if (resolvedModsDir == null || resolvedModsDir.isEmpty()) {
+            return false;
+        }
+
+        return openDirectoryInSystemBrowser(activity, new File(resolvedModsDir));
+    }
+
+    public static boolean openSaveDirectory(String storageRoot) {
+        MainActivity activity = instance();
+        if (activity == null || storageRoot == null || storageRoot.isEmpty()) {
+            return false;
+        }
+
+        return openDirectoryInSystemBrowser(activity, new File(storageRoot));
     }
 
     private static void writeZipText(ZipOutputStream zip, String name, String text) throws IOException {
@@ -800,6 +1122,70 @@ public final class MainActivity extends SDLActivity {
                 addFileToZip(zip, child, entryName);
             }
         }
+    }
+
+    private static boolean hasExportableSaveData(File root) {
+        return root != null && root.isDirectory()
+            && (new File(root, "player").isDirectory() || new File(root, "universe").isDirectory());
+    }
+
+    private static void shareZipFile(MainActivity activity, File zipFile, String title) {
+        Uri uri = FileProvider.getUriForFile(
+            activity,
+            activity.getPackageName() + ".fileprovider",
+            zipFile
+        );
+
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("application/zip");
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        List<ResolveInfo> targets = activity.getPackageManager().queryIntentActivities(intent, 0);
+        for (ResolveInfo target : targets) {
+            activity.grantUriPermission(
+                target.activityInfo.packageName,
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            );
+        }
+
+        activity.startActivity(Intent.createChooser(intent, title));
+    }
+
+    public static boolean exportSaveZip(String storageRoot) {
+        MainActivity activity = instance();
+        if (activity == null || storageRoot == null || storageRoot.isEmpty()) {
+            return false;
+        }
+
+        File root = new File(storageRoot);
+        if (!hasExportableSaveData(root)) {
+            return false;
+        }
+
+        activity.runOnUiThread(() -> {
+            try {
+                File exportDir = new File(activity.getFilesDir(), "save-exports");
+                if (!exportDir.exists() && !exportDir.mkdirs()) {
+                    Toast.makeText(activity, "Could not create save export folder.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+
+                File zipFile = new File(exportDir, "openstarbound-save-" + System.currentTimeMillis() + ".zip");
+                try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(zipFile, false))) {
+                    File player = new File(root, "player");
+                    File universe = new File(root, "universe");
+                    addDirectoryToZip(zip, player, player, "player");
+                    addDirectoryToZip(zip, universe, universe, "universe");
+                }
+
+                shareZipFile(activity, zipFile, "Share OpenStarbound save");
+            } catch (Throwable t) {
+                Toast.makeText(activity, "Could not export save: " + t.getMessage(), Toast.LENGTH_LONG).show();
+            }
+        });
+        return true;
     }
 
     private static String diagnosticsDeviceSummary() {
@@ -1092,6 +1478,23 @@ public final class MainActivity extends SDLActivity {
                         sImportedMods.addAll(imported);
                     }
                 }
+            } else if (requestCode == REQUEST_PICK_SAVE_ZIP) {
+                String saveRoot;
+                synchronized (PICKER_LOCK) {
+                    saveRoot = sTargetSaveRoot;
+                }
+                Uri zipUri = data.getData();
+                if (zipUri != null && saveRoot != null) {
+                    boolean imported = importSaveZipFromUri(this, zipUri, saveRoot);
+                    synchronized (PICKER_LOCK) {
+                        sSaveImportResult = imported;
+                    }
+                    Toast.makeText(
+                        this,
+                        imported ? "Save imported." : "Could not import save zip.",
+                        Toast.LENGTH_LONG
+                    ).show();
+                }
             }
         } finally {
             latch.countDown();
@@ -1099,6 +1502,7 @@ public final class MainActivity extends SDLActivity {
                 sLatch = null;
                 sTargetPackedPak = null;
                 sTargetModsDir = null;
+                sTargetSaveRoot = null;
             }
         }
     }

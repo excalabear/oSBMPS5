@@ -11,6 +11,9 @@ char** StarIosBridge_importModPakFiles(char const* modsDirectory, int* outCount)
 char** StarIosBridge_importSingleModFolder(char const* modsDirectory, int* outCount);
 char** StarIosBridge_importModsDirectory(char const* modsDirectory, int* outCount);
 bool StarIosBridge_openModsDirectory(char const* modsDirectory);
+bool StarIosBridge_openSaveDirectory(char const* storageRootDirectory);
+bool StarIosBridge_importSaveZip(char const* storageRootDirectory);
+bool StarIosBridge_exportSaveZip(char const* storageRootDirectory);
 void StarIosBridge_showToast(char const* message);
 void StarIosBridge_showDialog(char const* title, char const* message);
 bool StarIosBridge_openAppSettings();
@@ -110,6 +113,33 @@ bool IosFileAccessBridge::openModsDirectory(String const& modsDirectory) {
   return StarIosBridge_openModsDirectory(modsDirectory.utf8Ptr());
 #else
   (void)modsDirectory;
+  return false;
+#endif
+}
+
+bool IosFileAccessBridge::openSaveDirectory(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_IOS
+  return StarIosBridge_openSaveDirectory(storageRootDirectory.utf8Ptr());
+#else
+  (void)storageRootDirectory;
+  return false;
+#endif
+}
+
+bool IosFileAccessBridge::importSaveZip(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_IOS
+  return StarIosBridge_importSaveZip(storageRootDirectory.utf8Ptr());
+#else
+  (void)storageRootDirectory;
+  return false;
+#endif
+}
+
+bool IosFileAccessBridge::exportSaveZip(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_IOS
+  return StarIosBridge_exportSaveZip(storageRootDirectory.utf8Ptr());
+#else
+  (void)storageRootDirectory;
   return false;
 #endif
 }

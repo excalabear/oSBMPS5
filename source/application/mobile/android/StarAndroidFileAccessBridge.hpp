@@ -15,6 +15,9 @@ public:
   static StringList importSingleModFolder(String const& modsDirectory);
   static StringList importModsDirectory(String const& modsDirectory);
   static bool openModsDirectory(String const& modsDirectory);
+  static bool openSaveDirectory(String const& storageRootDirectory);
+  static bool importSaveZip(String const& storageRootDirectory);
+  static bool exportSaveZip(String const& storageRootDirectory);
   static bool exportDiagnostics(String const& storageRootDirectory);
   static void showToast(String const& message);
   static void showDialog(String const& title, String const& message);

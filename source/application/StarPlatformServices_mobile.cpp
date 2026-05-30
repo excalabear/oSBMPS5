@@ -86,6 +86,42 @@ public:
 #endif
   }
 
+  bool openSaveLocationInSystemBrowser() override {
+    File::makeDirectoryRecursive(m_storageRoot);
+
+#ifdef STAR_SYSTEM_ANDROID
+    return AndroidFileAccessBridge::openSaveDirectory(m_storageRoot);
+#elif defined(STAR_SYSTEM_IOS)
+    return IosFileAccessBridge::openSaveDirectory(m_storageRoot);
+#else
+    return false;
+#endif
+  }
+
+  bool importSaveZip() override {
+    File::makeDirectoryRecursive(m_storageRoot);
+
+#ifdef STAR_SYSTEM_ANDROID
+    return AndroidFileAccessBridge::importSaveZip(m_storageRoot);
+#elif defined(STAR_SYSTEM_IOS)
+    return IosFileAccessBridge::importSaveZip(m_storageRoot);
+#else
+    return false;
+#endif
+  }
+
+  bool exportSaveZip() override {
+    File::makeDirectoryRecursive(m_storageRoot);
+
+#ifdef STAR_SYSTEM_ANDROID
+    return AndroidFileAccessBridge::exportSaveZip(m_storageRoot);
+#elif defined(STAR_SYSTEM_IOS)
+    return IosFileAccessBridge::exportSaveZip(m_storageRoot);
+#else
+    return false;
+#endif
+  }
+
   bool exportDiagnostics() override {
 #ifdef STAR_SYSTEM_ANDROID
     return AndroidFileAccessBridge::exportDiagnostics(m_storageRoot);

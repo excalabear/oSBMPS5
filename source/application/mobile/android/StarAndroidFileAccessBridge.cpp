@@ -313,6 +313,96 @@ bool AndroidFileAccessBridge::openModsDirectory(String const& modsDirectory) {
 #endif
 }
 
+bool AndroidFileAccessBridge::openSaveDirectory(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return false;
+
+  auto cls = mainActivityClass(env);
+  if (!cls)
+    return false;
+
+  jmethodID method = env->GetStaticMethodID(cls.get(), "openSaveDirectory", "(Ljava/lang/String;)Z");
+  if (!method)
+    return false;
+
+  jstring arg = env->NewStringUTF(storageRootDirectory.utf8Ptr());
+  jboolean result = env->CallStaticBooleanMethod(cls.get(), method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return false;
+  }
+
+  return result == JNI_TRUE;
+#else
+  (void)storageRootDirectory;
+  return false;
+#endif
+}
+
+bool AndroidFileAccessBridge::importSaveZip(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return false;
+
+  auto cls = mainActivityClass(env);
+  if (!cls)
+    return false;
+
+  jmethodID method = env->GetStaticMethodID(cls.get(), "importSaveZip", "(Ljava/lang/String;)Z");
+  if (!method)
+    return false;
+
+  jstring arg = env->NewStringUTF(storageRootDirectory.utf8Ptr());
+  jboolean result = env->CallStaticBooleanMethod(cls.get(), method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return false;
+  }
+
+  return result == JNI_TRUE;
+#else
+  (void)storageRootDirectory;
+  return false;
+#endif
+}
+
+bool AndroidFileAccessBridge::exportSaveZip(String const& storageRootDirectory) {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = jniEnv();
+  if (!env)
+    return false;
+
+  auto cls = mainActivityClass(env);
+  if (!cls)
+    return false;
+
+  jmethodID method = env->GetStaticMethodID(cls.get(), "exportSaveZip", "(Ljava/lang/String;)Z");
+  if (!method)
+    return false;
+
+  jstring arg = env->NewStringUTF(storageRootDirectory.utf8Ptr());
+  jboolean result = env->CallStaticBooleanMethod(cls.get(), method, arg);
+  env->DeleteLocalRef(arg);
+
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    return false;
+  }
+
+  return result == JNI_TRUE;
+#else
+  (void)storageRootDirectory;
+  return false;
+#endif
+}
+
 bool AndroidFileAccessBridge::exportDiagnostics(String const& storageRootDirectory) {
 #ifdef STAR_SYSTEM_ANDROID
   JNIEnv* env = jniEnv();

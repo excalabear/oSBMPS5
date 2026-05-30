@@ -30,6 +30,15 @@ public:
   // Opens the app's mods folder in a native file browser if available.
   virtual bool openModsLocationInSystemBrowser() = 0;
 
+  // Opens the app's save storage folder in a native file browser if available.
+  virtual bool openSaveLocationInSystemBrowser() = 0;
+
+  // Imports player / universe save data from a selected .zip archive.
+  virtual bool importSaveZip() = 0;
+
+  // Exports player / universe save data through the native share sheet.
+  virtual bool exportSaveZip() = 0;
+
   // Exports logs and lightweight runtime diagnostics through the native share sheet.
   virtual bool exportDiagnostics() = 0;
 };
