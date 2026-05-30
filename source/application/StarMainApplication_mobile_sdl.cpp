@@ -693,6 +693,7 @@ struct MobileTouchElement {
   MobileTouchAction rightAction;
   MobileTouchPressMode pressMode = MobileTouchPressMode::Hold;
   float aimSensitivity = 1.0f;
+  bool preciseAim = false;
 };
 
 static String keysName(List<Key> const& keys) {
@@ -911,6 +912,7 @@ static Json jsonFromTouchElement(MobileTouchElement const& element) {
     {"size", element.size},
     {"pressMode", pressModeName(element.pressMode)},
     {"aimSensitivity", element.aimSensitivity},
+    {"preciseAim", element.preciseAim},
     {"action", jsonFromTouchAction(element.action)}
   };
   if (element.kind == MobileTouchElementKind::DPad) {
@@ -930,6 +932,7 @@ static MobileTouchElement touchElementFromJson(Json const& json, MobileTouchElem
   def.size = json.getFloat("size", def.size);
   def.pressMode = pressModeFromName(json.getString("pressMode", pressModeName(def.pressMode)), def.pressMode);
   def.aimSensitivity = json.getFloat("aimSensitivity", def.aimSensitivity);
+  def.preciseAim = json.getBool("preciseAim", def.preciseAim);
   if (auto pos = json.optArray("position")) {
     if (pos->size() >= 2)
       def.position = Vec2F(pos->get(0).toFloat(), pos->get(1).toFloat());
@@ -1524,6 +1527,8 @@ private:
         m_joystickFinger = 0;
         break;
       case FingerRole::AimJoystick:
+        if (m_aimJoystickActive && !aimJoystickPrecise())
+          syncVirtualAimCursor(true, true);
         m_aimJoystickActive = false;
         m_aimJoystickElementId.clear();
         m_aimJoystickFinger = 0;
@@ -1730,6 +1735,26 @@ private:
     m_hasAimJoystickTarget = true;
   }
 
+  bool aimJoystickPrecise() const {
+    if (auto element = findElement(m_aimJoystickElementId))
+      return element->preciseAim;
+    return false;
+  }
+
+  bool directionalAimActive() const {
+    return m_aimJoystickActive && !aimJoystickPrecise();
+  }
+
+  Vec2F directionalAimCenter() const {
+    Vec2F canvas = canvasSize();
+    return {canvas[0] * 0.5f, canvas[1] * 0.5f};
+  }
+
+  float directionalAimRadius() const {
+    Vec2F canvas = canvasSize();
+    return std::max(1.0f, std::min(canvas[0], canvas[1]) * 0.32f);
+  }
+
   Vec2F screenGyroVelocity() const {
     float gx = m_gyroInput[0];
     float gy = m_gyroInput[1];
@@ -1792,8 +1817,17 @@ private:
       float sensitivity = 1.0f;
       if (auto element = findElement(m_aimJoystickElementId))
         sensitivity = std::clamp(element->aimSensitivity, 0.25f, 4.0f);
-      float speed = controlRadius() * 0.22f * sensitivity * std::clamp(m_aimVec.magnitude(), 0.25f, 1.0f);
-      delta += m_aimVec * speed;
+      if (!aimJoystickPrecise()) {
+        float deflection = std::clamp(m_aimVec.magnitude(), 0.0f, 1.0f);
+        Vec2F direction = m_aimVec / std::max(0.0001f, m_aimVec.magnitude());
+        m_aimJoystickTarget = directionalAimCenter() + direction * directionalAimRadius() * deflection;
+        m_hasAimJoystickTarget = true;
+        syncVirtualAimCursor(true, false);
+        return;
+      } else {
+        float speed = controlRadius() * 0.22f * sensitivity * std::clamp(m_aimVec.magnitude(), 0.25f, 1.0f);
+        delta += m_aimVec * speed;
+      }
     }
 
     delta += gyroAimDelta(now);
@@ -1806,7 +1840,7 @@ private:
     m_aimJoystickTarget[0] = std::clamp(m_aimJoystickTarget[0], 0.0f, canvas[0]);
     m_aimJoystickTarget[1] = std::clamp(m_aimJoystickTarget[1], 0.0f, canvas[1]);
     m_hasAimJoystickTarget = true;
-    syncVirtualAimCursor(true);
+    syncVirtualAimCursor(true, true);
   }
 
   void repeatActionButtons() {
@@ -1892,7 +1926,10 @@ private:
       unsigned count = m_mouseHoldCounts.value(button, 0);
       m_mouseHoldCounts.set(button, count + 1);
       if (count == 0) {
-        syncVirtualAimCursor();
+        if (directionalAimActive())
+          updateVirtualAimTarget();
+        else
+          syncVirtualAimCursor();
         emitEvent(MouseButtonDownEvent{button, mouseActionPosition()});
       }
     } else if (!desired && m_mouseActionOwners.contains(token)) {
@@ -1900,7 +1937,10 @@ private:
       unsigned count = m_mouseHoldCounts.value(button, 0);
       if (count <= 1) {
         m_mouseHoldCounts.remove(button);
-        syncVirtualAimCursor();
+        if (directionalAimActive())
+          updateVirtualAimTarget();
+        else
+          syncVirtualAimCursor();
         emitEvent(MouseButtonUpEvent{button, mouseActionPosition()});
       } else {
         m_mouseHoldCounts.set(button, count - 1);
@@ -1966,7 +2006,7 @@ private:
       cancelPulsedAction(owner);
   }
 
-  void syncVirtualAimCursor(bool force = false) {
+  void syncVirtualAimCursor(bool force = false, bool cursorVisible = true) {
     if (!m_hasAimJoystickTarget)
       return;
 
@@ -1976,7 +2016,7 @@ private:
 
     m_cursorInputPosition = inputPosition;
     m_hasCursorInputPosition = true;
-    emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition});
+    emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition, cursorVisible});
   }
 
   Vec2F mouseActionPosition() const {
@@ -1988,7 +2028,7 @@ private:
     m_hasCursorInputPosition = true;
     m_aimJoystickTarget = pos;
     m_hasAimJoystickTarget = true;
-    emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition});
+    emitEvent(MouseMoveEvent{{0, 0}, m_cursorInputPosition, true});
   }
 
   void emitMouseDown(Vec2F const& pos, MouseButton button = MouseButton::Left) {
@@ -2734,6 +2774,22 @@ private:
     return keysName(keysFromTouchAction(action));
   }
 
+  float imguiButtonWidth(char const* label, ImVec2 size = {}) const {
+    if (size.x > 0.0f)
+      return size.x;
+
+    auto const& style = ImGui::GetStyle();
+    return ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f;
+  }
+
+  void sameLineIfNextFits(float nextItemWidth) const {
+    auto const& style = ImGui::GetStyle();
+    float nextItemMaxX = ImGui::GetItemRectMax().x + style.ItemSpacing.x + nextItemWidth;
+    float contentMaxX = ImGui::GetWindowPos().x + ImGui::GetContentRegionMax().x;
+    if (nextItemMaxX <= contentMaxX)
+      ImGui::SameLine();
+  }
+
   void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
     auto choices = touchActionChoices();
     int index = touchActionIndex(action);
@@ -2760,8 +2816,14 @@ private:
 
     auto& buffer = state.touchActionBuffers[bufferId];
     ImGui::PushID(bufferId.utf8Ptr());
+    float applyWidth = imguiButtonWidth("Apply");
+    float availableWidth = ImGui::GetContentRegionAvail().x;
+    bool inlineApply = availableWidth >= applyWidth + ImGui::GetStyle().ItemSpacing.x + 180.0f;
+    if (inlineApply)
+      ImGui::SetNextItemWidth(availableWidth - applyWidth - ImGui::GetStyle().ItemSpacing.x);
     ImGui::InputTextWithHint("Custom keys", "Example: LShift+F1 or Ctrl,Alt,E", buffer.data(), buffer.size());
-    ImGui::SameLine();
+    if (inlineApply)
+      ImGui::SameLine();
     if (ImGui::Button("Apply")) {
       auto keys = keysFromText(String(buffer.data()));
       if (keys.size() == 1)
@@ -2876,12 +2938,14 @@ private:
 
     ImGui::Text("Touch Controls Manager");
     ImGui::Separator();
+
+    if (ImGui::BeginChild("TouchManagerScroll", ImVec2(0.0f, 0.0f), false, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
     if (ImGui::Button("Back to Launcher"))
       state.touchManagerOpen = false;
-    ImGui::SameLine();
+    sameLineIfNextFits(imguiButtonWidth("Preview / Adjust Layout"));
     if (ImGui::Button("Preview / Adjust Layout"))
       state.touchPreviewOpen = true;
-    ImGui::SameLine();
+    sameLineIfNextFits(imguiButtonWidth("Save"));
     if (ImGui::Button("Save"))
       persistLauncherState(state);
 
@@ -2940,14 +3004,15 @@ private:
         state.touchPreviewOpen = true;
         ImGui::CloseCurrentPopup();
       }
-      ImGui::SameLine();
+      sameLineIfNextFits(imguiButtonWidth("Cancel", ImVec2(140.0f, 0.0f)));
       if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f)))
         ImGui::CloseCurrentPopup();
       ImGui::EndPopup();
     }
 
     ImGui::Separator();
-    if (ImGui::BeginChild("TouchControlList", ImVec2(0, -70.0f), true)) {
+    float listHeight = std::max(240.0f, ImGui::GetContentRegionAvail().y - ImGui::GetStyle().ItemSpacing.y);
+    if (ImGui::BeginChild("TouchControlList", ImVec2(0.0f, listHeight), true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
       for (int i = 0; i < (int)state.touchElements.size(); ++i) {
         auto& element = state.touchElements[i];
         ImGui::PushID(element.id.utf8Ptr());
@@ -2981,8 +3046,12 @@ private:
             renderTouchActionCombo(state, "Left", element.leftAction, element.id + ":left");
             renderTouchActionCombo(state, "Right", element.rightAction, element.id + ":right");
           } else if (element.kind == MobileTouchElementKind::AimJoystick) {
+            ImGui::Checkbox("Precise aim", &element.preciseAim);
             ImGui::SliderFloat("Aim sensitivity", &element.aimSensitivity, 0.25f, 4.0f);
-            ImGui::TextDisabled("Aim joystick moves the virtual cursor only.");
+            if (element.preciseAim)
+              ImGui::TextDisabled("Precise aim moves the virtual cursor.");
+            else
+              ImGui::TextDisabled("Directional aim points around the player.");
           } else {
             ImGui::TextDisabled("Joystick sends movement keys.");
           }
@@ -2990,6 +3059,8 @@ private:
         }
         ImGui::PopID();
       }
+    }
+    ImGui::EndChild();
     }
     ImGui::EndChild();
   }
@@ -3045,13 +3116,13 @@ private:
 
       if (ImGui::Button("Back to Launcher"))
         state.modManagerOpen = false;
-      ImGui::SameLine();
+      sameLineIfNextFits(imguiButtonWidth("Refresh List"));
       if (ImGui::Button("Refresh List"))
         state.modListDirty = true;
 
       ImGui::InputTextWithHint("##modsearch", "Search mods...", state.modSearchBuffer, sizeof(state.modSearchBuffer));
       ImGui::Checkbox("Show .pak mods", &state.modShowPackedPaks);
-      ImGui::SameLine();
+      sameLineIfNextFits(ImGui::CalcTextSize("Show unpacked folders").x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f);
       ImGui::Checkbox("Show unpacked folders", &state.modShowUnpackedFolders);
       ImGui::TextWrapped("Mods directory: %s", modsPath.utf8Ptr());
 
@@ -3121,10 +3192,11 @@ private:
           shownMods++;
           ImGui::PushID(mod.path.utf8Ptr());
           ImGui::TextUnformatted(mod.displayName.utf8Ptr());
-          ImGui::SameLine();
+          sameLineIfNextFits(ImGui::CalcTextSize(mod.isDirectory ? "[folder]" : "[.pak]").x);
           ImGui::TextDisabled("[%s]", mod.isDirectory ? "folder" : ".pak");
-          ImGui::SameLine();
-          ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - 110.0f));
+          sameLineIfNextFits(imguiButtonWidth("Delete", ImVec2(90.0f, 0.0f)));
+          if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + 90.0f <= ImGui::GetWindowPos().x + ImGui::GetContentRegionMax().x)
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - 110.0f));
           if (ImGui::Button("Delete", ImVec2(90.0f, 0.0f))) {
             state.pendingDeletePath = mod.path;
             state.pendingDeleteName = mod.displayName;
@@ -3166,7 +3238,7 @@ private:
           state.pendingDeleteIsDirectory = false;
           ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine();
+        sameLineIfNextFits(imguiButtonWidth("Cancel", ImVec2(140.0f, 0.0f)));
         if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f))) {
           state.pendingDeletePath.clear();
           state.pendingDeleteName.clear();
@@ -3219,7 +3291,7 @@ private:
           }
         });
       }
-      ImGui::SameLine();
+      sameLineIfNextFits(imguiButtonWidth("Export Save Zip"));
       if (ImGui::Button("Export Save Zip")) {
         runLauncherAction("Export save zip", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
@@ -3267,15 +3339,15 @@ private:
         state.modManagerOpen = true;
         state.modListDirty = true;
       }
-      ImGui::SameLine();
+      sameLineIfNextFits(imguiButtonWidth("Save Manager"));
       if (ImGui::Button("Save Manager"))
         state.saveManagerOpen = true;
-      ImGui::SameLine();
+      sameLineIfNextFits(imguiButtonWidth("Touch Controls"));
       if (ImGui::Button("Touch Controls")) {
         state.touchManagerOpen = true;
         state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, (int)state.touchElements.size() - 1);
       }
-      ImGui::SameLine();
+      sameLineIfNextFits(imguiButtonWidth("Export Diagnostics"));
       if (ImGui::Button("Export Diagnostics")) {
         runLauncherAction("Export diagnostics", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {

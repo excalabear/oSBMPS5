@@ -198,6 +198,7 @@ private:
   ActionBarPtr m_actionBar;
   Vec2F m_cursorScreenPos{};
   Vec2I m_cursorScreenIPos{};
+  bool m_cursorVisible = true;
   ItemSlotWidgetPtr m_cursorItem;
   Maybe<String> m_cursorTooltip;
 

@@ -245,6 +245,7 @@ struct TextInputEvent {
 struct MouseMoveEvent {
   Vec2F mouseMove;
   Vec2F mousePosition;
+  bool cursorVisible = true;
 };
 
 struct MouseButtonDownEvent {

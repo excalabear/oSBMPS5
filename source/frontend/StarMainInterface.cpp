@@ -282,8 +282,10 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   auto inv = player->inventory();
   auto& root = Root::singleton();
 
-  if (auto mouseMove = event.ptr<MouseMoveEvent>())
+  if (auto mouseMove = event.ptr<MouseMoveEvent>()) {
     m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = mouseMove->mousePosition);
+    m_cursorVisible = mouseMove->cursorVisible;
+  }
 
   if (m_paneManager.sendInputEvent(event)) {
     if (!event.is<MouseButtonUpEvent>() && !event.is<KeyUpEvent>())
@@ -1536,6 +1538,9 @@ void MainInterface::updateCursor() {
 void MainInterface::renderCursor() {
   // if we're currently playing a cinematic, we should not render the mouse.
   if (m_cinematicOverlay && !m_cinematicOverlay->completed())
+    return m_guiContext->applicationController()->setCursorVisible(false);
+
+  if (!m_cursorVisible)
     return m_guiContext->applicationController()->setCursorVisible(false);
 
   Vec2I cursorPos = m_cursorScreenIPos;
