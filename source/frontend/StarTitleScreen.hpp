@@ -117,6 +117,7 @@ private:
   TitlePaneManager m_paneManager;
 
   Vec2I m_cursorScreenPos;
+  bool m_cursorVisible = true;
   InterfaceCursor m_cursor;
   TitleState m_titleState;
 

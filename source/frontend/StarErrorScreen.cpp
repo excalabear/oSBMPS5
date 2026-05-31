@@ -46,8 +46,12 @@ void ErrorScreen::render() {
 }
 
 bool ErrorScreen::handleInputEvent(InputEvent const& event) {
-  if (auto mouseMove = event.ptr<MouseMoveEvent>())
+  if (auto mouseMove = event.ptr<MouseMoveEvent>()) {
     m_cursorScreenPos = Vec2I(mouseMove->mousePosition);
+    m_cursorVisible = mouseMove->cursorVisible;
+    if (!mouseMove->cursorVisible)
+      return false;
+  }
 
   return m_paneManager->sendInputEvent(event);
 }
@@ -58,6 +62,9 @@ void ErrorScreen::update(float dt) {
 }
 
 void ErrorScreen::renderCursor() {
+  if (!m_cursorVisible)
+    return m_guiContext->applicationController()->setCursorVisible(false);
+
   Vec2I cursorPos = m_cursorScreenPos;
   Vec2I cursorSize = m_cursor.size();
   Vec2I cursorOffset = m_cursor.offset();

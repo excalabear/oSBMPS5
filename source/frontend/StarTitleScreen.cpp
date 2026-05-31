@@ -99,8 +99,12 @@ void TitleScreen::render() {
 }
 
 bool TitleScreen::handleInputEvent(InputEvent const& event) {
-  if (auto mouseMove = event.ptr<MouseMoveEvent>())
+  if (auto mouseMove = event.ptr<MouseMoveEvent>()) {
     m_cursorScreenPos = Vec2I(mouseMove->mousePosition);
+    m_cursorVisible = mouseMove->cursorVisible;
+    if (!mouseMove->cursorVisible)
+      return false;
+  }
 
   if (event.is<KeyDownEvent>()) {
     if (GuiContext::singleton().actions(event).contains(InterfaceAction::TitleBack)) {
@@ -534,6 +538,9 @@ void TitleScreen::back() {
 
 void TitleScreen::renderCursor() {
   auto assets = Root::singleton().assets();
+
+  if (!m_cursorVisible)
+    return m_guiContext->applicationController()->setCursorVisible(false);
 
   Vec2I cursorPos = m_cursorScreenPos;
   Vec2I cursorSize = m_cursor.size();

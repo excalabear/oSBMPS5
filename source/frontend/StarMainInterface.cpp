@@ -285,6 +285,8 @@ bool MainInterface::handleInputEvent(InputEvent const& event) {
   if (auto mouseMove = event.ptr<MouseMoveEvent>()) {
     m_cursorScreenIPos = Vec2I::round(m_cursorScreenPos = mouseMove->mousePosition);
     m_cursorVisible = mouseMove->cursorVisible;
+    if (!mouseMove->cursorVisible)
+      return false;
   }
 
   if (m_paneManager.sendInputEvent(event)) {
