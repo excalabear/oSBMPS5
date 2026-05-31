@@ -979,11 +979,18 @@ struct LauncherModEntry {
   bool isPackedPak = false;
 };
 
+struct LauncherUiConfig {
+  float scale = 1.0f;
+  std::array<float, 3> accentColor = {0.28f, 0.55f, 1.0f};
+};
+
 struct LauncherState {
   bool canLaunch = false;
   String packedPakPath;
   String lastError;
   String lastStatus;
+  LauncherUiConfig uiConfig;
+  bool uiSettingsOpen = false;
   MobileTouchConfig touchConfig;
   std::vector<MobileTouchElement> touchElements;
   bool touchManagerOpen = false;
@@ -2599,14 +2606,56 @@ private:
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
     ImGui::StyleColorsDark();
-    auto& style = ImGui::GetStyle();
-    style.TouchExtraPadding = ImVec2(12.0f, 12.0f);
-    style.FramePadding = ImVec2(14.0f, 10.0f);
-    style.ItemSpacing = ImVec2(12.0f, 10.0f);
-    style.ScrollbarSize = std::max(style.ScrollbarSize, 28.0f);
+    applyLauncherUiStyle();
     refreshImGuiScale();
     ImGui_ImplSDL3_InitForOpenGL(m_window, m_glContext);
     ImGui_ImplOpenGL3_Init("#version 300 es");
+  }
+
+  static ImVec4 launcherColor(std::array<float, 3> const& color, float alpha) {
+    return ImVec4(color[0], color[1], color[2], alpha);
+  }
+
+  static ImVec4 launcherColorScaled(std::array<float, 3> const& color, float multiplier, float alpha) {
+    return ImVec4(
+        std::clamp(color[0] * multiplier, 0.0f, 1.0f),
+        std::clamp(color[1] * multiplier, 0.0f, 1.0f),
+        std::clamp(color[2] * multiplier, 0.0f, 1.0f),
+        alpha);
+  }
+
+  void applyLauncherUiStyle() {
+    if (!ImGui::GetCurrentContext())
+      return;
+
+    ImGui::StyleColorsDark();
+
+    float scale = std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
+    auto& style = ImGui::GetStyle();
+    style.TouchExtraPadding = ImVec2(12.0f * scale, 12.0f * scale);
+    style.FramePadding = ImVec2(14.0f * scale, 10.0f * scale);
+    style.ItemSpacing = ImVec2(12.0f * scale, 10.0f * scale);
+    style.ScrollbarSize = 28.0f * scale;
+
+    auto& colors = style.Colors;
+    auto const& accent = m_launcherUiConfig.accentColor;
+    colors[ImGuiCol_Button] = launcherColor(accent, 0.62f);
+    colors[ImGuiCol_ButtonHovered] = launcherColorScaled(accent, 1.15f, 0.86f);
+    colors[ImGuiCol_ButtonActive] = launcherColorScaled(accent, 0.82f, 0.96f);
+    colors[ImGuiCol_Header] = launcherColor(accent, 0.45f);
+    colors[ImGuiCol_HeaderHovered] = launcherColor(accent, 0.68f);
+    colors[ImGuiCol_HeaderActive] = launcherColor(accent, 0.86f);
+    colors[ImGuiCol_CheckMark] = launcherColorScaled(accent, 1.20f, 1.0f);
+    colors[ImGuiCol_SliderGrab] = launcherColorScaled(accent, 1.10f, 0.82f);
+    colors[ImGuiCol_SliderGrabActive] = launcherColorScaled(accent, 1.25f, 1.0f);
+    colors[ImGuiCol_SeparatorActive] = launcherColor(accent, 0.85f);
+    colors[ImGuiCol_SeparatorHovered] = launcherColor(accent, 0.65f);
+  }
+
+  void applyLauncherUiConfig(LauncherUiConfig const& config) {
+    m_launcherUiConfig = config;
+    applyLauncherUiStyle();
+    refreshImGuiScale();
   }
 
   void shutdownImGui() {
@@ -2686,6 +2735,21 @@ private:
 
     state.packedPakPath = config.optString("packedPakPath").value(""
     );
+
+    state.uiConfig.scale = std::clamp(config.queryFloat("launcherUi.scale", 1.0f), 0.75f, 1.75f);
+    if (auto accentColor = config.optQueryArray("launcherUi.accentColor")) {
+      if (accentColor->size() >= 3) {
+        state.uiConfig.accentColor = {
+          std::clamp(accentColor->get(0).toFloat(), 0.0f, 1.0f),
+          std::clamp(accentColor->get(1).toFloat(), 0.0f, 1.0f),
+          std::clamp(accentColor->get(2).toFloat(), 0.0f, 1.0f)
+        };
+      }
+    }
+    m_launcherUiConfig = state.uiConfig;
+    applyLauncherUiStyle();
+    refreshImGuiScale();
+
     if (!samePath(m_legacyStorageRoot, m_storageRoot)) {
       auto legacyRoot = File::convertDirSeparators(m_legacyStorageRoot).trimEnd("/");
       auto currentRoot = File::convertDirSeparators(m_storageRoot).trimEnd("/");
@@ -2932,6 +2996,26 @@ private:
     ImGui::End();
   }
 
+  void renderLauncherUiSettings(LauncherState& state) {
+    ImGui::Text("Launcher UI Settings");
+    ImGui::Separator();
+
+    if (ImGui::Button("Back to Launcher"))
+      state.uiSettingsOpen = false;
+    sameLineIfNextFits(imguiButtonWidth("Save"));
+    if (ImGui::Button("Save"))
+      persistLauncherState(state);
+
+    ImGui::SliderFloat("Launcher UI size", &state.uiConfig.scale, 0.75f, 1.75f, "%.2fx");
+    ImGui::ColorEdit3("Accent color", state.uiConfig.accentColor.data(),
+        ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
+
+    if (ImGui::Button("Reset UI Settings")) {
+      state.uiConfig = LauncherUiConfig();
+      applyLauncherUiConfig(state.uiConfig);
+    }
+  }
+
   void renderTouchManager(LauncherState& state) {
     bool gyroAvailable = platformGyroAvailable();
     if (!gyroAvailable)
@@ -3070,6 +3154,7 @@ private:
     syncWindowMetrics(false);
     processWindowEvents();
     syncWindowMetrics(false);
+    applyLauncherUiConfig(state.uiConfig);
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
@@ -3105,7 +3190,9 @@ private:
 
     bool launchPressed = false;
 
-    if (state.touchManagerOpen) {
+    if (state.uiSettingsOpen) {
+      renderLauncherUiSettings(state);
+    } else if (state.touchManagerOpen) {
       renderTouchManager(state);
     } else if (state.modManagerOpen) {
       if (state.modListDirty)
@@ -3343,6 +3430,9 @@ private:
       sameLineIfNextFits(imguiButtonWidth("Save Manager"));
       if (ImGui::Button("Save Manager"))
         state.saveManagerOpen = true;
+      sameLineIfNextFits(imguiButtonWidth("UI Settings"));
+      if (ImGui::Button("UI Settings"))
+        state.uiSettingsOpen = true;
       sameLineIfNextFits(imguiButtonWidth("Touch Controls"));
       if (ImGui::Button("Touch Controls")) {
         state.touchManagerOpen = true;
@@ -3413,6 +3503,14 @@ private:
   void persistLauncherState(LauncherState const& state) {
     Json config = JsonObject{
       {"packedPakPath", state.packedPakPath},
+      {"launcherUi", JsonObject{
+        {"scale", state.uiConfig.scale},
+        {"accentColor", JsonArray{
+          state.uiConfig.accentColor[0],
+          state.uiConfig.accentColor[1],
+          state.uiConfig.accentColor[2]
+        }}
+      }},
       {"touch", JsonObject{
         {"enabled", state.touchConfig.enabled},
         {"directTouchGestures", state.touchConfig.directTouchGestures},
@@ -4206,11 +4304,12 @@ private:
     float pixelScale = std::max(1.0f, std::round(m_displayScale));
     Vec2U canvas = gameCanvasSize();
     float shortSide = (float)std::min(canvas[0], canvas[1]) / pixelScale;
-    io.FontGlobalScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
+    float baseScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
 #else
     float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]);
-    io.FontGlobalScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
+    float baseScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
 #endif
+    io.FontGlobalScale = std::clamp(baseScale * std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f), 0.65f, 3.0f);
   }
 
   ImVec2 imguiDisplaySize() const {
@@ -4303,6 +4402,7 @@ private:
   String m_storageRoot;
   String m_legacyStorageRoot;
   String m_bootConfigPath;
+  LauncherUiConfig m_launcherUiConfig;
 
   TickRateApproacher m_updateTicker{60.0f, 1.0f};
   TickRateMonitor m_renderTicker{1.0f};
