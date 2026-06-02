@@ -13,6 +13,7 @@ import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Looper;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -40,6 +41,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
@@ -70,6 +72,8 @@ public final class MainActivity extends SDLActivity {
         // SDL3 is linked statically into libmain.so in this build.
         return new String[] { "main" };
     }
+
+    public static native void onNativeGyroAim(float x, float y, float z);
 
     @Override
     public void setOrientationBis(int w, int h, boolean resizable, String hint) {
@@ -545,12 +549,38 @@ public final class MainActivity extends SDLActivity {
             return false;
         }
 
-        activity.runOnUiThread(() -> {
+        AtomicBoolean result = new AtomicBoolean(false);
+        Runnable enableTask = () -> {
             if (mSurface != null) {
                 mSurface.enableSensor(Sensor.TYPE_GYROSCOPE, enabled);
+                result.set(true);
+            }
+        };
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            enableTask.run();
+            return result.get();
+        }
+
+        CountDownLatch latch = new CountDownLatch(1);
+        activity.runOnUiThread(() -> {
+            try {
+                enableTask.run();
+            } finally {
+                latch.countDown();
             }
         });
-        return true;
+
+        try {
+            if (!latch.await(2, TimeUnit.SECONDS)) {
+                return false;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+
+        return result.get();
     }
 
     public static boolean hasGyroSensor() {

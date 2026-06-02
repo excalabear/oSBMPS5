@@ -52,10 +52,18 @@ bool g_androidGyroHasData = false;
 
 }
 
-extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLActivity_onNativeGyro(JNIEnv*, jclass, jfloat x, jfloat y, jfloat z) {
+static void recordAndroidGyroData(jfloat x, jfloat y, jfloat z) {
   std::lock_guard<std::mutex> lock(g_androidGyroMutex);
   g_androidGyroData = {x, y, z};
   g_androidGyroHasData = true;
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLActivity_onNativeGyro(JNIEnv*, jclass, jfloat x, jfloat y, jfloat z) {
+  recordAndroidGyroData(x, y, z);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_io_github_openstarbound_mobile_MainActivity_onNativeGyroAim(JNIEnv*, jclass, jfloat x, jfloat y, jfloat z) {
+  recordAndroidGyroData(x, y, z);
 }
 
 static bool takeAndroidGyroData(std::array<float, 3>& data) {
@@ -1826,7 +1834,7 @@ private:
     if (omega.magnitudeSquared() <= 0.0001f)
       return {};
 
-    float pixelsPerRadian = controlRadius() * 5.0f * std::clamp(m_config.gyroSensitivity, 0.10f, 5.0f);
+    float pixelsPerRadian = controlRadius() * 5.0f * std::clamp(m_config.gyroSensitivity, 0.10f, 12.0f);
     Vec2F delta{-omega[1] * pixelsPerRadian * dt, omega[0] * pixelsPerRadian * dt};
     if (m_config.gyroInvertX)
       delta[0] = -delta[0];
@@ -3095,7 +3103,7 @@ private:
     ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
     ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
     ImGui::BeginDisabled(!gyroAvailable);
-    ImGui::SliderFloat("Gyro sensitivity", &state.touchConfig.gyroSensitivity, 0.10f, 5.0f);
+    ImGui::SliderFloat("Gyro sensitivity", &state.touchConfig.gyroSensitivity, 0.10f, 12.0f);
     ImGui::Checkbox("Invert gyro X axis", &state.touchConfig.gyroInvertX);
     ImGui::Checkbox("Invert gyro Y axis", &state.touchConfig.gyroInvertY);
     ImGui::EndDisabled();
@@ -4208,8 +4216,8 @@ private:
 #ifdef STAR_SYSTEM_ANDROID
     if (!m_androidGyroSensorEnabled) {
       m_androidGyroSensorEnabled = setAndroidGyroSensorEnabled(true);
+      androidLogInfo("Android gyro sensor %s through Java bridge", m_androidGyroSensorEnabled ? "enabled" : "failed to enable");
     }
-    return;
 #endif
 
     if (m_gyroSensor)

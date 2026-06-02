@@ -23,6 +23,8 @@ import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 
+import io.github.openstarbound.mobile.MainActivity;
+
 
 /**
     SDLSurface. This is what we draw on, so we need to know when it's created
@@ -378,7 +380,7 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
     }
 
     protected void emitGyro(float x, float y, float z) {
-        SDLActivity.onNativeGyro(x, y, z);
+        MainActivity.onNativeGyroAim(x, y, z);
     }
 
     @Override
