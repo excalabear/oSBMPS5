@@ -2633,6 +2633,7 @@ private:
     ImGui::CreateContext();
     auto& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigInputTrickleEventQueue = false;
 
     ImGui::StyleColorsDark();
     applyLauncherUiStyle();
@@ -4442,6 +4443,8 @@ private:
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
       if (!processLauncherTouchEvent(event)) {
+        if (isTouchDerivedMouseEvent(event))
+          continue;
         convertEventToRenderCoordinatesIfPossible(m_window, &event);
         ImGui_ImplSDL3_ProcessEvent(&event);
       }
