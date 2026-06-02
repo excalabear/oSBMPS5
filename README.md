@@ -31,6 +31,61 @@ The latest stable release is recommended, as the nightly build can have bugs.
 
 At the moment, you must have a copy of the game assets (**packed.pak**) to upload to the app.
 
+## Usage
+<details>
+<summary>Setting up</summary>
+
+All you have to do is download your **packed.pak** from your game files. Find the root of your Starbound installation, and under the assets/ folder, you will find packed.pak. Send that to your phone through any method, and then you can select that in the launcher by clicking "Pick packed.pak". After selecting it once, you will never have to select it again (unless you delete your data).
+</details>
+
+<details>
+<summary>Using/configuring touch controls</summary>
+
+There are many features that oSBM has that you should know about.
+- Direct screen touch gestures
+- Gyro Aiming
+- Aim joystick
+- D-Pad
+- etc. in the touch controls manager.
+
+### Touch Controls Manager
+The Touch Controls Manager is a menu in the oSBM launcher that can be accessed by clicking the Touch Controls button in the main menu. Opening it up, you will be presented with many options.
+
+There are two sections to the manager, the general toggles at the top, and the configurable buttons/joysticks below. In the top section, you can enable/disable various options about the touch controls.
+- **Enable touch overlay:** this toggles the actual usage of all touch controls.
+- **Enable direct screen touch gestures:** this toggles if the user can touch the screen anywhere to act as a left click at that location (the virtual mouse is placed at the place of the tap, and a left click occurs). Holding down with one finger where you want to aim, and then tapping or holding down with a second finger on the screen will initiate a right click/hold, occurring at the aimed location of the first finger.
+- **Invert gyro X/Y axis:** inverts the axis of the gyro if preferred.
+
+#### Custom Buttons
+You can add more custom buttons with some sort of interaction, such Tech, Codex, Chat, Interact, etc. Many of the essential functionalities are already created as buttons in the long list of options, though not all enabled by default.
+By clicking on the name of a button, it will open up details about it. In general, there will be the Displayed text, which you can change to change the name of the button and what is displayed on it in-game, the size which is self explanatory, the position, which can be adjusted visually with the Preview / Adjust Layout button at the top, the Interaction that occurs when the button is interacted with, and button behavior, which is **Single press, Rapid fire/repeat, Hold, and Toggle.** Single press runs the interaction once when the button is tapped. Rapid fire repeatedly runs the interaction while the button is held, hold will send the signal that the interaction should be held (typically the one you want), and toggle which is hold but instead of canceling when released it is canceled when it is tapped for the second time.
+
+#### Macros
+Macros let one touch button press multiple keyboard keys at the same time. They are useful for shortcuts that normally require a modifier key, such as emotes, menu shortcuts, or any custom keybinds you have set up in Starbound.
+
+To make a macro, open a button in the Touch Controls Manager and use the **Custom keys** field under its interaction. Enter each key name separated by `+`, spaces, commas, or semicolons, then press **Apply**. If you enter one valid key, the button becomes a normal single-key action. If you enter multiple valid keys, the button becomes a macro.
+
+Examples:
+- `LShift+F1`
+- `LCtrl,LShift,Up`
+- `LAlt E`
+- `1` for action bar slot 1
+
+Key names should match the names used by the game, such as `A`, `Space`, `Return`, `Esc`, `LShift`, `LCtrl`, `LAlt`, `Up`, `Down`, `F1`, or `1`. Invalid key names are ignored, so if a macro does not work, double-check the spelling and capitalization.
+
+The selected button behavior applies to the whole macro:
+- **Single press:** briefly presses all keys in the macro once.
+- **Rapid fire / repeat:** repeatedly sends that same brief macro press while held.
+- **Hold:** holds all keys in the macro down until you release the touch button.
+- **Toggle:** holds all keys in the macro down until you tap the touch button again.
+
+Macros are simultaneous key presses, not ordered scripts. For example, `LCtrl+LShift+Up` is treated like holding those three keys together, not pressing them one after another.
+
+</details>
+<details>
+<summary>How to play</summary>
+Just click Launch once the packed.pak has been selected! As long as Enable touch overlay is on, touch controls will show up in-game.
+</details>
 
 ## Building
 
