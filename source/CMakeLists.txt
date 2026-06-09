@@ -520,13 +520,8 @@ find_package(ZLIB REQUIRED)
 find_package(PNG REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(cpr CONFIG REQUIRED)
-if(STAR_SYSTEM_ANDROID)
-  pkg_check_modules(OPUS REQUIRED IMPORTED_TARGET GLOBAL opus)
-  set(STAR_OPUS_TARGET PkgConfig::OPUS)
-else()
-  find_package(Opus CONFIG REQUIRED)
-  set(STAR_OPUS_TARGET Opus::opus)
-endif()
+find_package(Opus CONFIG REQUIRED)
+set(STAR_OPUS_TARGET Opus::opus)
 find_package(OggVorbis REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 find_package(re2 CONFIG REQUIRED)
@@ -738,6 +733,7 @@ if(STAR_BUILD_GUI)
   if(STAR_SYSTEM_ANDROID)
     set(STAR_ANDROID_HOST_DIR "${PROJECT_SOURCE_DIR}/application/mobile/android/host")
     set(STAR_ANDROID_GRADLE_WRAPPER "${STAR_ANDROID_HOST_DIR}/gradlew")
+    set(STAR_ANDROID_GRADLE_WRAPPER_BAT "${STAR_ANDROID_HOST_DIR}/gradlew.bat")
     set(STAR_ANDROID_GRADLE_USER_HOME "${CMAKE_BINARY_DIR}/.gradle")
     set(STAR_ANDROID_APK_GRADLE_TASK ":app:assembleDebug")
     if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo" OR CMAKE_BUILD_TYPE STREQUAL "RelWithAsserts" OR CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
@@ -753,18 +749,34 @@ if(STAR_BUILD_GUI)
     else()
       set(STAR_ANDROID_SDL3_JAR "")
     endif()
-    add_custom_target(android_apk ALL
-      COMMAND ${CMAKE_COMMAND} -E env
-        ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
-        ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
-        GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
-        STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
-        bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
-      DEPENDS starbound
-      WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
-      COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
-      VERBATIM
-    )
+
+    if(CMAKE_HOST_WIN32)
+      add_custom_target(android_apk ALL
+        COMMAND ${CMAKE_COMMAND} -E env
+          ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
+          ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
+          GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
+          STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+          cmd /c "if exist \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" (call \"${STAR_ANDROID_GRADLE_WRAPPER_BAT}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}) else (gradle.bat -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK})"
+        DEPENDS starbound
+        WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
+        COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
+        VERBATIM
+      )
+    else()
+      add_custom_target(android_apk ALL
+        COMMAND ${CMAKE_COMMAND} -E env
+          ANDROID_NDK_HOME=$ENV{ANDROID_NDK_HOME}
+          ANDROID_SDK_ROOT=$ENV{ANDROID_SDK_ROOT}
+          GRADLE_USER_HOME=${STAR_ANDROID_GRADLE_USER_HOME}
+          STAR_SDL3_JAR=${STAR_ANDROID_SDL3_JAR}
+          bash -lc "if [ -z \"${JAVA_HOME}\" ]; then export JAVA_HOME=\"$(dirname \"$(dirname \"$(readlink -f \"$(command -v javac)\")\")\")\"; fi; if [ -x \"${STAR_ANDROID_GRADLE_WRAPPER}\" ]; then \"${STAR_ANDROID_GRADLE_WRAPPER}\" -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; elif command -v gradle >/dev/null 2>&1; then gradle -p \"${STAR_ANDROID_HOST_DIR}\" ${STAR_ANDROID_APK_GRADLE_TASK}; else echo \"Android packaging requires Gradle. Install 'gradle' or add a wrapper at ${STAR_ANDROID_GRADLE_WRAPPER}.\" >&2; exit 1; fi"
+        DEPENDS starbound
+        WORKING_DIRECTORY "${STAR_ANDROID_HOST_DIR}"
+        COMMENT "Building Android APK (${STAR_ANDROID_APK_GRADLE_TASK})"
+        VERBATIM
+      )
+    endif()
   endif()
 
   # Qt GUI tools
