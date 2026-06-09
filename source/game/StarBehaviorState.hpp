@@ -10,6 +10,7 @@ STAR_CLASS(BehaviorState);
 STAR_STRUCT(ActionState);
 STAR_STRUCT(DecoratorState);
 STAR_STRUCT(CompositeState);
+STAR_STRUCT(ModuleState);
 
 STAR_EXCEPTION(BehaviorException, StarException);
 
@@ -42,7 +43,7 @@ private:
   Set<pair<NodeParameterType, String>> m_ephemeral;
 };
 
-typedef Maybe<Variant<ActionState,DecoratorState,CompositeState>> NodeState;
+typedef Maybe<Variant<ActionState,DecoratorState,CompositeState,ModuleState>> NodeState;
 typedef shared_ptr<NodeState> NodeStatePtr;
 
 typedef pair<LuaFunction, LuaThread> Coroutine;
@@ -73,6 +74,12 @@ struct CompositeState {
   List<NodeStatePtr> children;
 };
 
+struct ModuleState {
+  ModuleState(BehaviorTreeConstPtr tree, LuaTable context, Maybe<BlackboardWeakPtr> blackboard);
+
+  BehaviorStatePtr state;
+};
+
 class BehaviorState {
 public:
   BehaviorState(BehaviorTreeConstPtr tree, LuaTable context, Maybe<BlackboardWeakPtr> blackboard = {});
@@ -90,6 +97,7 @@ private:
 
   NodeStatus runAction(ActionNode const& node, NodeState& state);
   NodeStatus runDecorator(DecoratorNode const& node, NodeState& state);
+  NodeStatus runModule(BehaviorTreeConstPtr const& tree, NodeState& state);
 
   NodeStatus runComposite(CompositeNode const& node, NodeState& state);
   NodeStatus runSequence(SequenceNode const& node, NodeState& state);

@@ -1,9 +1,36 @@
 #include "StarBehaviorDatabase.hpp"
+#include "StarAlgorithm.hpp"
 #include "StarAssets.hpp"
+#include "StarLogging.hpp"
 #include "StarRoot.hpp"
 #include "StarJsonExtra.hpp"
+#include "StarTime.hpp"
 
 namespace Star {
+
+namespace {
+  constexpr size_t BehaviorBuildDepthLimit = 2048;
+#if STAR_PLATFORM_MOBILE
+  constexpr size_t BehaviorBuildNodeLimit = 250000;
+#else
+  constexpr size_t BehaviorBuildNodeLimit = 1000000;
+#endif
+
+  Json behaviorParameterValueToJson(NodeParameterValue const& value) {
+    if (auto key = value.maybe<String>())
+      return JsonObject{{"key", *key}};
+    else
+      return JsonObject{{"value", value.get<Json>()}};
+  }
+
+  String behaviorModuleCacheKey(String const& name, StringMap<NodeParameterValue> const& parameters) {
+    JsonObject parameterJson;
+    for (auto const& parameter : parameters)
+      parameterJson.set(parameter.first, behaviorParameterValueToJson(parameter.second));
+
+    return strf("{}\n{}", name, Json(parameterJson).repr(0, true));
+  }
+}
 
 EnumMap<NodeParameterType> const NodeParameterTypeNames {
   {NodeParameterType::Json, "json"},
@@ -148,6 +175,16 @@ RandomizeNode::RandomizeNode(List<BehaviorNodeConstPtr> children) : children(chi
 BehaviorTree::BehaviorTree(String const& name, StringSet scripts, JsonObject const& parameters)
   : name(name), scripts(scripts), parameters(parameters) { }
 
+struct BehaviorDatabase::BuildContext {
+  size_t depth = 0;
+  size_t maxDepth = 0;
+  size_t nodeCount = 0;
+  size_t moduleBuilds = 0;
+  size_t moduleCacheHits = 0;
+  StringMap<BehaviorTreeConstPtr> moduleCache;
+  StringList moduleStack;
+};
+
 BehaviorDatabase::BehaviorDatabase() {
   auto assets = Root::singleton().assets();
 
@@ -190,20 +227,36 @@ BehaviorDatabase::BehaviorDatabase() {
     }
   }
 
-  for (auto& pair : m_configs) {
-    if (!m_behaviors.contains(pair.first))
-      loadTree(pair.first);
-  }
+  Logger::info("BehaviorDatabase: Scanned {} node file(s), {} behavior file(s), {} named behavior tree(s)",
+      nodeFiles.size(), behaviorFiles.size(), m_configs.size());
+
+#if !STAR_PLATFORM_MOBILE
+  for (auto& pair : m_configs)
+    loadTree(pair.first);
+#endif
 }
 
 BehaviorTreeConstPtr BehaviorDatabase::behaviorTree(String const& name) const {
-  if (!m_behaviors.contains(name))
-    throw StarException(strf("No such behavior tree \'{}\'", name));
+  {
+    MutexLocker locker(m_behaviorsMutex);
+    if (auto behavior = m_behaviors.maybe(name))
+      return *behavior;
+  }
 
-  return m_behaviors.get(name);
+  return loadTree(name);
 }
 
 BehaviorTreeConstPtr BehaviorDatabase::buildTree(Json const& config, StringMap<NodeParameterValue> const& overrides) const {
+  BuildContext context;
+  return buildTree(config, overrides, context);
+}
+
+BehaviorTreeConstPtr BehaviorDatabase::buildTree(Json const& config, StringMap<NodeParameterValue> const& overrides, BuildContext& context) const {
+  if (++context.depth > BehaviorBuildDepthLimit)
+    throw MemoryException(strf("Behavior tree '{}' exceeded maximum module nesting depth {}", config.getString("name"), BehaviorBuildDepthLimit));
+  auto decrementDepth = finally([&context]() { --context.depth; });
+  context.maxDepth = max(context.maxDepth, context.depth);
+
   StringSet scripts = jsonToStringSet(config.get("scripts", JsonArray()));
   auto tree = BehaviorTree(config.getString("name"), scripts, config.getObject("parameters", {}));
 
@@ -212,7 +265,7 @@ BehaviorTreeConstPtr BehaviorDatabase::buildTree(Json const& config, StringMap<N
     parameters.set(p.first, p.second);
   for (auto p : overrides)
     parameters.set(p.first, p.second);
-  BehaviorNodeConstPtr root = behaviorNode(config.get("root"), parameters, tree);
+  BehaviorNodeConstPtr root = behaviorNode(config.get("root"), parameters, tree, context);
   tree.root = root;
   return std::make_shared<BehaviorTree>(std::move(tree));
 }
@@ -224,13 +277,38 @@ Json BehaviorDatabase::behaviorConfig(String const& name) const {
   return m_configs.get(name);
 }
 
-void BehaviorDatabase::loadTree(String const& name) {
-  m_behaviors.set(name, buildTree(m_configs.get(name)));
+BehaviorTreeConstPtr BehaviorDatabase::loadTree(String const& name) const {
+  if (!m_configs.contains(name))
+    throw StarException(strf("No such behavior tree \'{}\'", name));
+
+  try {
+    BuildContext context;
+    Logger::info("BehaviorDatabase: Building behavior tree '{}'...", name);
+    auto startSeconds = Time::monotonicTime();
+    auto behavior = buildTree(m_configs.get(name), {}, context);
+
+    MutexLocker locker(m_behaviorsMutex);
+    if (auto existing = m_behaviors.maybe(name))
+      return *existing;
+
+    m_behaviors.set(name, behavior);
+    Logger::info(
+        "BehaviorDatabase: Built '{}' in {} seconds (nodes={}, modulesBuilt={}, moduleCacheHits={}, uniqueModules={}, maxDepth={})",
+        name, Time::monotonicTime() - startSeconds, context.nodeCount, context.moduleBuilds, context.moduleCacheHits,
+        context.moduleCache.size(), context.maxDepth);
+    return behavior;
+  } catch (std::bad_alloc const& e) {
+    Logger::error("BehaviorDatabase: Out of memory while building behavior tree '{}'", name);
+    throw MemoryException(strf("Out of memory while building behavior tree '{}'", name), e);
+  } catch (StarException const& e) {
+    Logger::error("BehaviorDatabase: Failed building behavior tree '{}': {}", name, outputException(e, false));
+    throw StarException(strf("Could not build behavior tree '{}'", name), e);
+  }
 }
 
-CompositeNode BehaviorDatabase::compositeNode(Json const& config, StringMap<NodeParameter> parameters, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree) const {
-  List<BehaviorNodeConstPtr> children = config.getArray("children", {}).transformed([this,treeParameters,&tree](Json const& child) {
-      return behaviorNode(child, treeParameters, tree);
+CompositeNode BehaviorDatabase::compositeNode(Json const& config, StringMap<NodeParameter> parameters, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree, BuildContext& context) const {
+  List<BehaviorNodeConstPtr> children = config.getArray("children", {}).transformed([this,treeParameters,&tree,&context](Json const& child) {
+      return behaviorNode(child, treeParameters, tree, context);
     });
 
   CompositeType type = CompositeTypeNames.getLeft(config.getString("name"));
@@ -249,7 +327,10 @@ CompositeNode BehaviorDatabase::compositeNode(Json const& config, StringMap<Node
   throw StarException(strf("Composite node type '{}' could not be created from JSON", CompositeTypeNames.getRight(type)));
 }
 
-BehaviorNodeConstPtr BehaviorDatabase::behaviorNode(Json const& json, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree) const {
+BehaviorNodeConstPtr BehaviorDatabase::behaviorNode(Json const& json, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree, BuildContext& context) const {
+  if (++context.nodeCount > BehaviorBuildNodeLimit)
+    throw MemoryException(strf("Behavior tree '{}' exceeded maximum expanded node count {}", tree.name, BehaviorBuildNodeLimit));
+
   BehaviorNodeType type = BehaviorNodeTypeNames.getLeft(json.getString("type"));
 
   auto name = json.getString("name");
@@ -262,11 +343,23 @@ BehaviorNodeConstPtr BehaviorDatabase::behaviorNode(Json const& json, StringMap<
       for (auto p : parameterConfig)
         moduleParameters.set(p.first, replaceBehaviorTag(nodeParameterValueFromJson(p.second), treeParameters));
 
-      BehaviorTree module = *buildTree(m_configs.get(name), moduleParameters);
-      tree.scripts.addAll(module.scripts);
-      tree.functions.addAll(module.functions);
+      auto cacheKey = behaviorModuleCacheKey(name, moduleParameters);
+      if (auto module = context.moduleCache.maybe(cacheKey)) {
+        ++context.moduleCacheHits;
+        return make_shared<BehaviorNode>(*module);
+      }
 
-      return module.root;
+      if (context.moduleStack.contains(cacheKey))
+        throw StarException(strf("Recursive behavior module reference while building '{}' through module '{}'", tree.name, name));
+
+      context.moduleStack.append(cacheKey);
+      ++context.moduleBuilds;
+      auto module = buildTree(m_configs.get(name), moduleParameters, context);
+      context.moduleStack.takeLast();
+
+      context.moduleCache.set(cacheKey, module);
+
+      return make_shared<BehaviorNode>(module);
   }
 
   StringMap<NodeParameter> parameters = m_nodeParameters.get(name);
@@ -285,10 +378,10 @@ BehaviorNodeConstPtr BehaviorDatabase::behaviorNode(Json const& json, StringMap<
     return make_shared<BehaviorNode>(ActionNode(name, parameters, output));
   } else if (type == BehaviorNodeType::Decorator) {
     tree.functions.add(name);
-    BehaviorNodeConstPtr child = behaviorNode(json.get("child"), treeParameters, tree);
+    BehaviorNodeConstPtr child = behaviorNode(json.get("child"), treeParameters, tree, context);
     return make_shared<BehaviorNode>(DecoratorNode(name, parameters, child));
   } else if (type == BehaviorNodeType::Composite) {
-    return make_shared<BehaviorNode>(compositeNode(json, parameters, treeParameters, tree));
+    return make_shared<BehaviorNode>(compositeNode(json, parameters, treeParameters, tree, context));
   }
 
   // above statement must be exhaustive

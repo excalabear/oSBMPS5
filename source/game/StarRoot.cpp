@@ -53,6 +53,8 @@
 #include "StarRadioMessageDatabase.hpp"
 #include "StarCollectionDatabase.hpp"
 
+#include <sstream>
+
 namespace Star {
 
 namespace {
@@ -62,6 +64,28 @@ namespace {
 #else
   unsigned const RootLoadThreads = 4;
 #endif
+
+  String processMemorySummary() {
+#if defined(STAR_SYSTEM_ANDROID)
+    try {
+      auto status = File::readFileString("/proc/self/status");
+      std::istringstream stream(status.utf8());
+      std::string line;
+      StringList interesting;
+      while (std::getline(stream, line)) {
+        if (line.rfind("VmPeak:", 0) == 0 || line.rfind("VmSize:", 0) == 0 || line.rfind("VmHWM:", 0) == 0
+            || line.rfind("VmRSS:", 0) == 0 || line.rfind("Threads:", 0) == 0) {
+          interesting.append(String(line));
+        }
+      }
+
+      if (!interesting.empty())
+        return interesting.join(", ");
+    } catch (...) {}
+#endif
+
+    return "memory status unavailable";
+  }
 }
 
 Root* Root::singletonPtr() {
@@ -320,6 +344,7 @@ void Root::loadMods(StringList modDirectories, bool _reload) {
 
 void Root::fullyLoad() {
   Logger::info("Root: Loading everything with {} worker thread(s)", RootLoadThreads);
+  Logger::info("Root: Memory before fullyLoad: {}", processMemorySummary());
   auto workerPool = WorkerPool("Root::fullyLoad", RootLoadThreads);
   List<WorkerPoolHandle> loaders;
 
@@ -370,12 +395,14 @@ void Root::fullyLoad() {
   for (auto& loader : loaders)
     loader.finish();
   Logger::info("Root: Loaded everything in {} seconds", Time::monotonicTime() - startSeconds);
+  Logger::info("Root: Memory after fullyLoad: {}", processMemorySummary());
 
   {
     MutexLocker locker(m_assetsMutex);
     if (m_assets)
       m_assets->clearCache();
   }
+  Logger::info("Root: Memory after asset cache clear: {}", processMemorySummary());
 }
 
 void Root::registerReloadListener(ListenerWeakPtr reloadListener) {
@@ -767,8 +794,21 @@ shared_ptr<T> Root::loadMemberFunction(shared_ptr<T>& ptr, Mutex& mutex, char co
   MutexLocker locker(mutex);
   if (!ptr) {
     auto startSeconds = Time::monotonicTime();
-    ptr = loadFunction();
+#if STAR_PLATFORM_MOBILE
+    Logger::info("Root: Loading {}... ({})", name, processMemorySummary());
+#endif
+    try {
+      ptr = loadFunction();
+    } catch (...) {
+#if STAR_PLATFORM_MOBILE
+      Logger::error("Root: Failed loading {} after {} seconds ({})", name, Time::monotonicTime() - startSeconds, processMemorySummary());
+#endif
+      throw;
+    }
     Logger::info("Root: Loaded {} in {} seconds", name, Time::monotonicTime() - startSeconds);
+#if STAR_PLATFORM_MOBILE
+    Logger::info("Root: Memory after {}: {}", name, processMemorySummary());
+#endif
   }
   return ptr;
 }

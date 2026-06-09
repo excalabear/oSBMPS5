@@ -131,6 +131,10 @@ CompositeState::CompositeState(size_t childCount, size_t begin) : CompositeState
   index = begin;
 }
 
+ModuleState::ModuleState(BehaviorTreeConstPtr tree, LuaTable context, Maybe<BlackboardWeakPtr> blackboard) {
+  state = make_shared<BehaviorState>(std::move(tree), std::move(context), blackboard);
+}
+
 BehaviorState::BehaviorState(BehaviorTreeConstPtr tree, LuaTable context, Maybe<BlackboardWeakPtr> blackboard) : m_tree(tree), m_luaContext(std::move(context)) {
   if (blackboard)
     m_board = *blackboard;
@@ -191,8 +195,10 @@ NodeStatus BehaviorState::runNode(BehaviorNode const& node, NodeState& state) {
     status = runDecorator(node.get<DecoratorNode>(), state);
   else if(node.is<CompositeNode>())
     status = runComposite(node.get<CompositeNode>(), state);
+  else if (node.is<BehaviorTreeConstPtr>())
+    status = runModule(node.get<BehaviorTreeConstPtr>(), state);
   else
-    StarException("Unidentified behavior node type");
+    throw StarException("Unidentified behavior node type");
 
   if (status != NodeStatus::Running)
     state.reset();
@@ -272,6 +278,13 @@ NodeStatus BehaviorState::runDecorator(DecoratorNode const& node, NodeState& sta
   m_threads.append(decorator.thread);
 
   return status;
+}
+
+NodeStatus BehaviorState::runModule(BehaviorTreeConstPtr const& tree, NodeState& state) {
+  if (state.isNothing())
+    state.set(ModuleState(tree, m_luaContext, blackboardPtr()));
+
+  return state->get<ModuleState>().state->run(m_lastDt);
 }
 
 NodeStatus BehaviorState::runComposite(CompositeNode const& node, NodeState& state) {
