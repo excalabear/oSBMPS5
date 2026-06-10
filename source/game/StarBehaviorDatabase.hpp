@@ -2,6 +2,7 @@
 
 #include "StarGameTypes.hpp"
 #include "StarJson.hpp"
+#include "StarThread.hpp"
 
 namespace Star {
 
@@ -137,16 +138,20 @@ public:
   Json behaviorConfig(String const& name) const;
 
 private:
+  struct BuildContext;
+
   StringMap<Json> m_configs;
-  StringMap<BehaviorTreeConstPtr> m_behaviors;
+  mutable StringMap<BehaviorTreeConstPtr> m_behaviors;
+  mutable Mutex m_behaviorsMutex;
   StringMap<StringMap<NodeParameter>> m_nodeParameters;
   StringMap<StringMap<NodeOutput>> m_nodeOutput;
 
-  void loadTree(String const& name);
+  BehaviorTreeConstPtr loadTree(String const& name) const;
+  BehaviorTreeConstPtr buildTree(Json const& config, StringMap<NodeParameterValue> const& overrides, BuildContext& context) const;
 
   // constructs node variants
-  CompositeNode compositeNode(Json const& config, StringMap<NodeParameter> parameters, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree) const;
-  BehaviorNodeConstPtr behaviorNode(Json const& json, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree) const;
+  CompositeNode compositeNode(Json const& config, StringMap<NodeParameter> parameters, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree, BuildContext& context) const;
+  BehaviorNodeConstPtr behaviorNode(Json const& json, StringMap<NodeParameterValue> const& treeParameters, BehaviorTree& tree, BuildContext& context) const;
 };
 
 }

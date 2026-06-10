@@ -219,7 +219,15 @@ String loadPreferredLauncherLocale() {
   androidLogInfo("loadPreferredLauncherLocale: raw=%s normalized=%s", locale.utf8Ptr(), normalized.utf8Ptr());
   return normalized;
 #elif defined(STAR_SYSTEM_IOS)
-  return normalizeLauncherLocale(SDL_GetPreferredLocales() && SDL_GetPreferredLocales()->language ? strf("{}_{}", SDL_GetPreferredLocales()->language, SDL_GetPreferredLocales()->country ? SDL_GetPreferredLocales()->country : "") : DefaultLauncherLocale);
+  int localeCount = 0;
+  SDL_Locale** locales = SDL_GetPreferredLocales(&localeCount);
+  String locale = DefaultLauncherLocale;
+  if (locales && localeCount > 0 && locales[0] && locales[0]->language) {
+    locale = locales[0]->country ? strf("{}_{}", locales[0]->language, locales[0]->country) : String(locales[0]->language);
+  }
+  if (locales)
+    SDL_free(locales);
+  return normalizeLauncherLocale(locale);
 #else
   return DefaultLauncherLocale;
 #endif
@@ -2943,6 +2951,7 @@ private:
       for (auto const& pair : loadLauncherLangFile(localePath).pairs())
         m_launcherTranslations[pair.first] = pair.second;
     }
+  }
 
   String launcherText(String const& key, String const& fallback = {}) const {
     if (auto value = m_launcherTranslations.ptr(key))
@@ -2967,7 +2976,6 @@ private:
       m_launcherFontData = File::readFile(fontPath);
       ImFontConfig config{};
       config.FontDataOwnedByAtlas = false;
-      config.FontBuilderFlags |= ImGuiFontBuilderFlags_Bitmap;
       io.Fonts->AddFontFromMemoryTTF(m_launcherFontData.ptr(), (int)m_launcherFontData.size(), 18.0f, &config, io.Fonts->GetGlyphRangesChineseFull());
     }
 

@@ -1,7 +1,9 @@
 package io.github.openstarbound.mobile;
 
 import android.app.AlertDialog;
+import android.app.ActivityManager;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ResolveInfo;
@@ -13,6 +15,7 @@ import android.hardware.SensorManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Debug;
 import android.os.LocaleList;
 import android.os.Looper;
 import android.util.Log;
@@ -34,9 +37,11 @@ import androidx.documentfile.provider.DocumentFile;
 
 import org.libsdl.app.SDLActivity;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
@@ -1245,6 +1250,110 @@ public final class MainActivity extends SDLActivity {
         return builder.toString();
     }
 
+    private static String readProcSelfStatus() {
+        StringBuilder builder = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/self/status"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("Name:")
+                    || line.startsWith("State:")
+                    || line.startsWith("VmPeak:")
+                    || line.startsWith("VmSize:")
+                    || line.startsWith("VmHWM:")
+                    || line.startsWith("VmRSS:")
+                    || line.startsWith("RssAnon:")
+                    || line.startsWith("RssFile:")
+                    || line.startsWith("RssShmem:")
+                    || line.startsWith("Threads:")) {
+                    builder.append(line).append('\n');
+                }
+            }
+        } catch (Throwable t) {
+            builder.append("procStatusError=").append(t.getMessage()).append('\n');
+        }
+        return builder.toString();
+    }
+
+    private static String diagnosticsMemorySummary() {
+        StringBuilder builder = new StringBuilder();
+        Runtime runtime = Runtime.getRuntime();
+        builder.append("javaHeapUsed=").append(runtime.totalMemory() - runtime.freeMemory()).append('\n');
+        builder.append("javaHeapFree=").append(runtime.freeMemory()).append('\n');
+        builder.append("javaHeapTotal=").append(runtime.totalMemory()).append('\n');
+        builder.append("javaHeapMax=").append(runtime.maxMemory()).append('\n');
+        builder.append("nativeHeapAllocated=").append(Debug.getNativeHeapAllocatedSize()).append('\n');
+        builder.append("nativeHeapFree=").append(Debug.getNativeHeapFreeSize()).append('\n');
+        builder.append("nativeHeapSize=").append(Debug.getNativeHeapSize()).append('\n');
+
+        ActivityManager activityManager = (ActivityManager) instance().getSystemService(Context.ACTIVITY_SERVICE);
+        if (activityManager != null) {
+            ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
+            activityManager.getMemoryInfo(memoryInfo);
+            builder.append("memoryClassMb=").append(activityManager.getMemoryClass()).append('\n');
+            builder.append("largeMemoryClassMb=").append(activityManager.getLargeMemoryClass()).append('\n');
+            builder.append("isLowRamDevice=").append(activityManager.isLowRamDevice()).append('\n');
+            builder.append("systemAvailMem=").append(memoryInfo.availMem).append('\n');
+            builder.append("systemTotalMem=").append(memoryInfo.totalMem).append('\n');
+            builder.append("systemThreshold=").append(memoryInfo.threshold).append('\n');
+            builder.append("systemLowMemory=").append(memoryInfo.lowMemory).append('\n');
+        }
+
+        Debug.MemoryInfo processMemory = new Debug.MemoryInfo();
+        Debug.getMemoryInfo(processMemory);
+        builder.append("processTotalPssKb=").append(processMemory.getTotalPss()).append('\n');
+        builder.append("processTotalPrivateDirtyKb=").append(processMemory.getTotalPrivateDirty()).append('\n');
+        builder.append("processTotalSharedDirtyKb=").append(processMemory.getTotalSharedDirty()).append('\n');
+        builder.append('\n').append("[proc/self/status]").append('\n');
+        builder.append(readProcSelfStatus());
+        return builder.toString();
+    }
+
+    private static void appendFileListing(StringBuilder builder, File file, String label, int depth) {
+        if (file == null) {
+            return;
+        }
+
+        for (int i = 0; i < depth; ++i) {
+            builder.append("  ");
+        }
+        builder.append(label)
+            .append(" exists=").append(file.exists())
+            .append(" directory=").append(file.isDirectory())
+            .append(" file=").append(file.isFile())
+            .append(" size=").append(file.isFile() ? file.length() : 0)
+            .append(" modified=").append(file.exists() ? file.lastModified() : 0)
+            .append('\n');
+
+        if (!file.isDirectory() || depth >= 2) {
+            return;
+        }
+
+        File[] children = file.listFiles();
+        if (children == null) {
+            for (int i = 0; i <= depth; ++i) {
+                builder.append("  ");
+            }
+            builder.append("<unreadable>\n");
+            return;
+        }
+
+        for (File child : children) {
+            appendFileListing(builder, child, child.getName(), depth + 1);
+        }
+    }
+
+    private static String diagnosticsStorageSummary(File root) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("storageRoot=").append(root.getAbsolutePath()).append('\n');
+        appendFileListing(builder, new File(root, "assets"), "assets", 0);
+        appendFileListing(builder, new File(root, "bundled_assets"), "bundled_assets", 0);
+        appendFileListing(builder, new File(root, "mods"), "mods", 0);
+        appendFileListing(builder, new File(root, "storage"), "storage", 0);
+        appendFileListing(builder, new File(root, "player"), "player", 0);
+        appendFileListing(builder, new File(root, "universe"), "universe", 0);
+        return builder.toString();
+    }
+
     public static boolean exportDiagnostics(String storageRoot) {
         MainActivity activity = instance();
         if (activity == null || storageRoot == null || storageRoot.isEmpty()) {
@@ -1263,6 +1372,8 @@ public final class MainActivity extends SDLActivity {
                 File zipFile = new File(diagnosticsDir, "openstarbound-diagnostics-" + System.currentTimeMillis() + ".zip");
                 try (ZipOutputStream zip = new ZipOutputStream(new FileOutputStream(zipFile, false))) {
                     writeZipText(zip, "device.txt", diagnosticsDeviceSummary());
+                    writeZipText(zip, "memory.txt", diagnosticsMemorySummary());
+                    writeZipText(zip, "storage.txt", diagnosticsStorageSummary(root));
                     File logs = new File(root, "logs");
                     addDirectoryToZip(zip, logs, logs, "logs");
                     addFileToZip(zip, new File(root, "mobile_launcher.json"), "mobile_launcher.json");
