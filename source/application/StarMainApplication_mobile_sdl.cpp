@@ -2,6 +2,7 @@
 
 #include "StarApplication.hpp"
 #include "StarApplicationController.hpp"
+#include "StarByteArray.hpp"
 #include "StarFile.hpp"
 #include "StarJsonExtra.hpp"
 #include "StarLogging.hpp"
@@ -92,6 +93,170 @@ struct SafeAreaInsets {
 };
 
 namespace {
+
+char const* const LauncherLangDirectory = "lang";
+char const* const DefaultLauncherLocale = "en_US";
+char const* const SystemLocaleMarker = "__system__";
+char const* const PreferredLauncherFontPath = "hobo.ttf";
+char const* const BundledLauncherFontPath = "opensb/hobo.ttf";
+
+#ifdef STAR_SYSTEM_ANDROID
+void androidLogInfo(char const* fmt, ...);
+#elif defined(STAR_SYSTEM_IOS)
+void androidLogInfo(char const* fmt, ...);
+#else
+inline void androidLogInfo(char const*, ...) {}
+#endif
+
+String normalizeLauncherLocale(String locale) {
+  locale = locale.trim();
+  if (locale.empty())
+    return DefaultLauncherLocale;
+
+  locale = locale.replace("-", "_");
+  auto parts = locale.split('_');
+  if (parts.empty())
+    return DefaultLauncherLocale;
+
+  auto language = parts.at(0).toLower();
+  if (language.empty())
+    return DefaultLauncherLocale;
+
+  String region;
+  if (parts.size() >= 2)
+    region = parts.at(1).toUpper();
+
+  if (region.empty()) {
+    if (language == "zh")
+      region = "CN";
+    else if (language == "en")
+      region = "US";
+  }
+
+  return region.empty() ? language : strf("{}_{}", language, region);
+}
+
+String parseLauncherLangLine(String const& line, StringMap<String>& out) {
+  auto trimmed = line.trim();
+  if (trimmed.empty() || trimmed.beginsWith("#") || trimmed.beginsWith("//"))
+    return {};
+
+  auto separator = trimmed.find('=');
+  if (separator == NPos)
+    return trimmed;
+
+  String key = trimmed.substr(0, separator).trim();
+  String value = trimmed.substr(separator + 1).trim();
+  if (!key.empty())
+    out[key] = value;
+  return {};
+}
+
+StringMap<String> loadLauncherLangFile(String const& path) {
+  StringMap<String> out;
+  if (!File::isFile(path))
+    return out;
+
+  for (auto const& line : File::readFileString(path).splitLines()) {
+    if (auto invalid = parseLauncherLangLine(line, out); !invalid.empty())
+      androidLogInfo("Ignoring invalid launcher lang line in %s: %s", path.utf8Ptr(), invalid.utf8Ptr());
+  }
+
+  return out;
+}
+
+String launcherTextStatic(String const& key, String const& fallback = {}) {
+  static StringMap<String> translations = loadLauncherLangFile(File::relativeTo(LauncherLangDirectory, strf("{}.lang", DefaultLauncherLocale)));
+  if (auto value = translations.ptr(key))
+    return *value;
+  return fallback.empty() ? key : fallback;
+}
+
+String loadPreferredLauncherLocale() {
+#ifdef STAR_SYSTEM_ANDROID
+  JNIEnv* env = reinterpret_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  if (!env)
+    return DefaultLauncherLocale;
+
+  jobject activity = reinterpret_cast<jobject>(SDL_GetAndroidActivity());
+  if (!activity)
+    return DefaultLauncherLocale;
+
+  jclass cls = env->GetObjectClass(activity);
+  if (!cls) {
+    env->DeleteLocalRef(activity);
+    return DefaultLauncherLocale;
+  }
+
+  jmethodID method = env->GetStaticMethodID(cls, "getPreferredLocales", "()Ljava/lang/String;");
+  if (!method) {
+    androidLogInfo("loadPreferredLauncherLocale: getPreferredLocales method missing");
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+    return DefaultLauncherLocale;
+  }
+
+  jstring result = (jstring)env->CallStaticObjectMethod(cls, method);
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(activity);
+  if (env->ExceptionCheck()) {
+    env->ExceptionClear();
+    androidLogInfo("loadPreferredLauncherLocale: Java exception, fallback to default");
+    return DefaultLauncherLocale;
+  }
+
+  String locale = DefaultLauncherLocale;
+  if (result) {
+    char const* utf = env->GetStringUTFChars(result, nullptr);
+    if (utf)
+      locale = utf;
+    if (utf)
+      env->ReleaseStringUTFChars(result, utf);
+    env->DeleteLocalRef(result);
+  }
+
+  auto locales = locale.split(',');
+  auto normalized = normalizeLauncherLocale(locales.empty() ? locale : locales.at(0));
+  androidLogInfo("loadPreferredLauncherLocale: raw=%s normalized=%s", locale.utf8Ptr(), normalized.utf8Ptr());
+  return normalized;
+#elif defined(STAR_SYSTEM_IOS)
+  int localeCount = 0;
+  SDL_Locale** locales = SDL_GetPreferredLocales(&localeCount);
+  String locale = DefaultLauncherLocale;
+  if (locales && localeCount > 0 && locales[0] && locales[0]->language) {
+    locale = locales[0]->country ? strf("{}_{}", locales[0]->language, locales[0]->country) : String(locales[0]->language);
+  }
+  if (locales)
+    SDL_free(locales);
+  return normalizeLauncherLocale(locale);
+#else
+  return DefaultLauncherLocale;
+#endif
+}
+
+String resolveLauncherLocaleChoice(String const& localeChoice) {
+  auto choice = localeChoice.trim();
+  if (choice.empty() || choice == SystemLocaleMarker)
+    return loadPreferredLauncherLocale();
+  return normalizeLauncherLocale(choice);
+}
+
+std::vector<String> launcherCjkFontCandidates() {
+  return {
+#ifdef STAR_SYSTEM_ANDROID
+    "/system/fonts/NotoSansCJK-Regular.ttc",
+    "/system/fonts/NotoSansSC-Regular.otf",
+    "/system/fonts/NotoSansHans-Regular.otf",
+    "/system/fonts/DroidSansFallback.ttf",
+    "/system/fonts/SourceHanSansCN-Regular.otf",
+#elif defined(STAR_SYSTEM_IOS)
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/LanguageSupport/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+#endif
+  };
+}
 
 #ifdef STAR_SYSTEM_ANDROID
 void androidLogInfo(char const* fmt, ...) {
@@ -717,19 +882,19 @@ static String actionName(MobileTouchAction const& action) {
     case MobileTouchActionKind::Key:
       return KeyNames.getRight(action.key);
     case MobileTouchActionKind::KeyMacro:
-      return action.keys.empty() ? "Macro" : keysName(action.keys);
+      return action.keys.empty() ? launcherTextStatic("touchAction.macro", "Macro") : keysName(action.keys);
     case MobileTouchActionKind::MouseButton:
-      return action.mouseButton == MouseButton::Left ? "Left Mouse"
-          : action.mouseButton == MouseButton::Right ? "Right Mouse"
+      return action.mouseButton == MouseButton::Left ? launcherTextStatic("touchAction.leftMouse", "Left Mouse")
+          : action.mouseButton == MouseButton::Right ? launcherTextStatic("touchAction.rightMouse", "Right Mouse")
           : MouseButtonNames.getRight(action.mouseButton);
     case MobileTouchActionKind::MouseWheelUp:
-      return "Scroll Up";
+      return launcherTextStatic("touchAction.scrollUp", "Scroll Up");
     case MobileTouchActionKind::MouseWheelDown:
-      return "Scroll Down";
+      return launcherTextStatic("touchAction.scrollDown", "Scroll Down");
     case MobileTouchActionKind::GyroToggle:
-      return "Gyro Toggle";
+      return launcherTextStatic("touchAction.gyroToggle", "Gyro Toggle");
     default:
-      return "None";
+      return launcherTextStatic("touchAction.none", "None");
   }
 }
 
@@ -799,19 +964,19 @@ static MobileTouchPressMode pressModeFromName(String const& name, MobileTouchPre
 
 static std::vector<MobileTouchElement> defaultTouchElements() {
   return {
-    {"joystick", "Joystick", MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
-    {"aimJoystick", "Aim", MobileTouchElementKind::AimJoystick, true, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
-    {"leftHand", "L", MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
-    {"rightHand", "R", MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
-    {"jump", "J", MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
-    {"interact", "E", MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
-    {"pause", "ESC", MobileTouchElementKind::Button, true, {0.10f, 0.15f}, 0.96f, keyAction(Key::Escape), {}, {}, {}, {}},
-    {"chat", "T", MobileTouchElementKind::Button, true, {0.83f, 0.90f}, 0.72f, keyAction(Key::Return), {}, {}, {}, {}},
-    {"tech", "F", MobileTouchElementKind::Button, true, {0.92f, 0.58f}, 0.86f, keyAction(Key::F), {}, {}, {}, {}},
-    {"shift", "Shift", MobileTouchElementKind::Button, false, {0.66f, 0.88f}, 0.82f, keyAction(Key::LShift), {}, {}, {}, {}},
-    {"ctrl", "Ctrl", MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
-    {"gyroToggle", "Gyro", MobileTouchElementKind::Button, false, {0.74f, 0.88f}, 0.82f, gyroToggleAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
-    {"dpad", "D-PAD", MobileTouchElementKind::DPad, false, {0.16f, 0.74f}, 1.05f, keyAction(Key::Space),
+    {"joystick", launcherTextStatic("touchElement.joystick", "Joystick"), MobileTouchElementKind::Joystick, true, {0.14f, 0.78f}, 1.15f, keyAction(Key::Space), {}, {}, {}, {}},
+    {"aimJoystick", launcherTextStatic("touchElement.aimJoystick", "Aim"), MobileTouchElementKind::AimJoystick, true, {0.66f, 0.78f}, 1.15f, noneAction(), {}, {}, {}, {}},
+    {"leftHand", launcherTextStatic("touchElement.leftHand", "L"), MobileTouchElementKind::Button, true, {0.30f, 0.16f}, 0.92f, mouseAction(MouseButton::Left), {}, {}, {}, {}},
+    {"rightHand", launcherTextStatic("touchElement.rightHand", "R"), MobileTouchElementKind::Button, true, {0.64f, 0.16f}, 0.92f, mouseAction(MouseButton::Right), {}, {}, {}, {}},
+    {"jump", launcherTextStatic("touchElement.jump", "J"), MobileTouchElementKind::Button, true, {0.88f, 0.78f}, 1.00f, keyAction(Key::Space), {}, {}, {}, {}},
+    {"interact", launcherTextStatic("touchElement.interact", "E"), MobileTouchElementKind::Button, true, {0.76f, 0.73f}, 0.92f, keyAction(Key::E), {}, {}, {}, {}},
+    {"pause", launcherTextStatic("touchElement.pause", "ESC"), MobileTouchElementKind::Button, true, {0.10f, 0.15f}, 0.96f, keyAction(Key::Escape), {}, {}, {}, {}},
+    {"chat", launcherTextStatic("touchElement.chat", "T"), MobileTouchElementKind::Button, true, {0.83f, 0.90f}, 0.72f, keyAction(Key::Return), {}, {}, {}, {}},
+    {"tech", launcherTextStatic("touchElement.tech", "F"), MobileTouchElementKind::Button, true, {0.92f, 0.58f}, 0.86f, keyAction(Key::F), {}, {}, {}, {}},
+    {"shift", launcherTextStatic("touchElement.shift", "Shift"), MobileTouchElementKind::Button, false, {0.66f, 0.88f}, 0.82f, keyAction(Key::LShift), {}, {}, {}, {}},
+    {"ctrl", launcherTextStatic("touchElement.ctrl", "Ctrl"), MobileTouchElementKind::Button, false, {0.58f, 0.88f}, 0.82f, keyAction(Key::LCtrl), {}, {}, {}, {}},
+    {"gyroToggle", launcherTextStatic("touchElement.gyro", "Gyro"), MobileTouchElementKind::Button, false, {0.74f, 0.88f}, 0.82f, gyroToggleAction(), {}, {}, {}, {}, MobileTouchPressMode::SinglePress},
+    {"dpad", launcherTextStatic("touchElement.dpad", "D-PAD"), MobileTouchElementKind::DPad, false, {0.16f, 0.74f}, 1.05f, keyAction(Key::Space),
       keyAction(Key::W), keyAction(Key::S), keyAction(Key::A), keyAction(Key::D)}
   };
 }
@@ -1011,6 +1176,8 @@ struct LauncherState {
   String lastError;
   String lastStatus;
   LauncherUiConfig uiConfig;
+  String locale;
+  String systemLocale;
   bool uiSettingsOpen = false;
   MobileTouchConfig touchConfig;
   std::vector<MobileTouchElement> touchElements;
@@ -2100,10 +2267,10 @@ private:
       draw->AddText(ImVec2(c.x - arm * 0.22f, c.y - arm * 0.38f), base, label);
     };
 
-    drawArm("up", ImVec2(center.x, center.y - arm * 1.25f), "W");
-    drawArm("down", ImVec2(center.x, center.y + arm * 1.25f), "S");
-    drawArm("left", ImVec2(center.x - arm * 1.25f, center.y), "A");
-    drawArm("right", ImVec2(center.x + arm * 1.25f, center.y), "D");
+    drawArm("up", ImVec2(center.x, center.y - arm * 1.25f), launcherTextStatic("touchElement.dpadUp", "W").utf8Ptr());
+    drawArm("down", ImVec2(center.x, center.y + arm * 1.25f), launcherTextStatic("touchElement.dpadDown", "S").utf8Ptr());
+    drawArm("left", ImVec2(center.x - arm * 1.25f, center.y), launcherTextStatic("touchElement.dpadLeft", "A").utf8Ptr());
+    drawArm("right", ImVec2(center.x + arm * 1.25f, center.y), launcherTextStatic("touchElement.dpadRight", "D").utf8Ptr());
   }
 
   Vec2U* m_windowSize;
@@ -2180,11 +2347,13 @@ public:
     androidLogInfo("Mobile run() start");
     setupSdl();
     setupWindowAndRenderer();
-    setupImGui();
 
     m_legacyStorageRoot = defaultMobileStorageRoot();
     m_storageRoot = writableMobileStorageRoot(m_legacyStorageRoot);
     m_platformServices = MobilePlatformServices::create(m_storageRoot);
+    syncLauncherBundledAssets();
+    reloadLauncherLocalization();
+    setupImGui();
 
     LauncherState launcher;
     loadLauncherState(launcher);
@@ -2203,8 +2372,8 @@ public:
       while (!m_quitRequested) {
         if (!prepareBootConfig(launcher, launcher.lastError)) {
           if (launcher.lastError.empty())
-            launcher.lastError = "Failed to prepare runtime boot configuration.";
-          launcher.lastStatus = "Launch failed. Check imported files and storage permissions.";
+            launcher.lastError = launcherText("runtime.prepareBootConfigFailed", "Failed to prepare runtime boot configuration.");
+          launcher.lastStatus = launcherText("runtime.launchFailedCheckFiles", "Launch failed. Check imported files and storage permissions.");
           m_quitRequested = false;
           while (!m_quitRequested && !runLauncher(launcher))
             Thread::sleepPrecise(4);
@@ -2214,7 +2383,7 @@ public:
         if (startApplication(launcher.lastError))
           break;
 
-        launcher.lastStatus = "Launch failed. Fix the issue and try again.";
+        launcher.lastStatus = launcherText("runtime.launchFailedFixIssue", "Launch failed. Fix the issue and try again.");
         m_quitRequested = false;
 
         while (!m_quitRequested && !runLauncher(launcher))
@@ -2232,19 +2401,19 @@ public:
         auto message = strf("{}", outputException(e, true));
         Logger::error("Runtime loop failed: {}", message);
         launcher.lastError = message;
-        launcher.lastStatus = "Runtime failure. Review error and try again.";
+        launcher.lastStatus = launcherText("runtime.reviewErrorAndRetry", "Runtime failure. Review error and try again.");
         if (m_platformServices && m_platformServices->mobileSystemUiService())
-          m_platformServices->mobileSystemUiService()->showDialog("Runtime Error", message);
+          m_platformServices->mobileSystemUiService()->showDialog(launcherText("runtime.dialogTitle", "Runtime Error"), message);
       } catch (...) {
         Logger::error("Runtime loop failed: unknown error");
-        launcher.lastError = "Unknown runtime failure";
-        launcher.lastStatus = "Runtime failure. Review error and try again.";
+        launcher.lastError = launcherText("runtime.unknownFailure", "Unknown runtime failure");
+        launcher.lastStatus = launcherText("runtime.reviewErrorAndRetry", "Runtime failure. Review error and try again.");
         if (m_platformServices && m_platformServices->mobileSystemUiService())
-          m_platformServices->mobileSystemUiService()->showDialog("Runtime Error", "Unknown runtime failure");
+          m_platformServices->mobileSystemUiService()->showDialog(launcherText("runtime.dialogTitle", "Runtime Error"), launcherText("runtime.unknownFailure", "Unknown runtime failure"));
       }
       if (launcher.lastError.empty() && !m_runtimeExitReason.empty()) {
         launcher.lastError = m_runtimeExitReason;
-        launcher.lastStatus = "Returned to launcher.";
+        launcher.lastStatus = launcherText("runtime.returnedToLauncher", "Returned to launcher.");
       }
       shutdownApplication();
       androidLogInfo("Returning to launcher after shutdown");
@@ -2635,11 +2804,17 @@ private:
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigInputTrickleEventQueue = false;
 
+    loadLauncherFont(io);
     ImGui::StyleColorsDark();
     applyLauncherUiStyle();
     refreshImGuiScale();
     ImGui_ImplSDL3_InitForOpenGL(m_window, m_glContext);
     ImGui_ImplOpenGL3_Init("#version 300 es");
+    if ((uintptr_t)io.Fonts->TexID != 0) {
+      glBindTexture(GL_TEXTURE_2D, (GLuint)(uintptr_t)io.Fonts->TexID);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
   }
 
   static ImVec4 launcherColor(std::array<float, 3> const& color, float alpha) {
@@ -2759,6 +2934,114 @@ private:
     state.modListDirty = false;
   }
 
+  void syncLauncherBundledAssets() {
+#if STAR_SYSTEM_ANDROID
+    String bundledStorageRoot = File::relativeTo(m_storageRoot, "bundled_assets");
+    if (auto synced = AndroidFileAccessBridge::syncBundledAssets(bundledStorageRoot)) {
+      auto syncedRoot = *synced;
+      auto bundledLangDirectory = File::relativeTo(syncedRoot, LauncherLangDirectory);
+      auto bundledFontPath = File::relativeTo(syncedRoot, PreferredLauncherFontPath);
+      if (File::isDirectory(bundledLangDirectory))
+        m_launcherLangDirectory = bundledLangDirectory;
+      if (File::isFile(bundledFontPath))
+        m_launcherFontPath = bundledFontPath;
+    } else {
+
+    }
+#elif STAR_SYSTEM_IOS
+    String bundledStorageRoot = File::relativeTo(m_storageRoot, "bundled_assets");
+    if (auto synced = IosFileAccessBridge::syncBundledAssets(bundledStorageRoot)) {
+      auto syncedRoot = *synced;
+      auto bundledLangDirectory = File::relativeTo(syncedRoot, LauncherLangDirectory);
+      auto bundledFontPath = File::relativeTo(syncedRoot, PreferredLauncherFontPath);
+      if (File::isDirectory(bundledLangDirectory))
+        m_launcherLangDirectory = bundledLangDirectory;
+      if (File::isFile(bundledFontPath))
+        m_launcherFontPath = bundledFontPath;
+    }
+#endif
+  }
+
+  void reloadLauncherLocalization(String const& preferredLocale = {}) {
+    m_launcherLocale = resolveLauncherLocaleChoice(preferredLocale);
+    if (!File::isDirectory(m_launcherLangDirectory))
+      m_launcherLangDirectory = File::relativeTo(m_storageRoot, strf("bundled_assets/{}", LauncherLangDirectory));
+
+    auto defaultPath = File::relativeTo(m_launcherLangDirectory, strf("{}.lang", DefaultLauncherLocale));
+    auto localePath = File::relativeTo(m_launcherLangDirectory, strf("{}.lang", m_launcherLocale));
+
+    m_launcherTranslations = loadLauncherLangFile(defaultPath);
+    if (m_launcherLocale != DefaultLauncherLocale) {
+      for (auto const& pair : loadLauncherLangFile(localePath).pairs())
+        m_launcherTranslations[pair.first] = pair.second;
+    }
+  }
+
+  String launcherText(String const& key, String const& fallback = {}) const {
+    if (auto value = m_launcherTranslations.ptr(key))
+      return *value;
+    return fallback;
+  }
+
+  void loadLauncherFont(ImGuiIO& io) {
+    io.Fonts->Clear();
+
+    String fontPath;
+    if (!m_launcherFontPath.empty() && File::isFile(m_launcherFontPath)) {
+      fontPath = m_launcherFontPath;
+    } else {
+      fontPath = File::relativeTo(m_storageRoot, strf("bundled_assets/{}", PreferredLauncherFontPath));
+      if (!File::isFile(fontPath)) {
+        fontPath = File::relativeTo(m_storageRoot, strf("bundled_assets/{}", BundledLauncherFontPath));
+        if (!File::isFile(fontPath))
+          fontPath.clear();
+      }
+    }
+
+    m_launcherFontData.clear();
+    if (!fontPath.empty()) {
+      m_launcherFontData = File::readFile(fontPath);
+      ImFontConfig config{};
+      config.FontDataOwnedByAtlas = false;
+      io.Fonts->AddFontFromMemoryTTF(m_launcherFontData.ptr(), (int)m_launcherFontData.size(), 18.0f, &config);
+    }
+
+    if (io.Fonts->Fonts.empty())
+      io.Fonts->AddFontDefault();
+
+    m_launcherFallbackFontData.clear();
+    for (auto const& candidate : launcherCjkFontCandidates()) {
+      if (!File::isFile(candidate))
+        continue;
+
+      m_launcherFallbackFontData.push_back(File::readFile(candidate));
+      auto& fontData = m_launcherFallbackFontData.back();
+      ImFontConfig config{};
+      config.FontDataOwnedByAtlas = false;
+      config.MergeMode = true;
+      if (io.Fonts->AddFontFromMemoryTTF(fontData.ptr(), (int)fontData.size(), 18.0f, &config, io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+        androidLogInfo("Loaded launcher CJK fallback font: %s", candidate.utf8Ptr());
+        break;
+      }
+      m_launcherFallbackFontData.pop_back();
+    }
+  }
+
+  void reloadLauncherFontAtlas() {
+    if (!ImGui::GetCurrentContext())
+      return;
+
+    auto& io = ImGui::GetIO();
+    loadLauncherFont(io);
+    ImGui_ImplOpenGL3_DestroyFontsTexture();
+    ImGui_ImplOpenGL3_CreateFontsTexture();
+    if ((uintptr_t)io.Fonts->TexID != 0) {
+      glBindTexture(GL_TEXTURE_2D, (GLuint)(uintptr_t)io.Fonts->TexID);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    }
+  }
+
   void loadLauncherState(LauncherState& state) {
     auto configService = m_platformServices->launchConfigService();
     Json config = configService ? configService->loadLauncherConfig() : JsonObject();
@@ -2776,6 +3059,11 @@ private:
         };
       }
     }
+    String savedLocale = config.queryString("launcherUi.locale", SystemLocaleMarker);
+    state.locale = savedLocale.empty() || savedLocale == SystemLocaleMarker ? String(SystemLocaleMarker) : normalizeLauncherLocale(savedLocale);
+    state.systemLocale = loadPreferredLauncherLocale();
+    reloadLauncherLocalization(state.locale);
+    reloadLauncherFontAtlas();
     m_launcherUiConfig = state.uiConfig;
     applyLauncherUiStyle();
     refreshImGuiScale();
@@ -2807,39 +3095,39 @@ private:
     state.touchElements = touchElementsFromConfig(config);
 
     state.canLaunch = File::isFile(state.packedPakPath);
-    state.lastStatus = state.canLaunch ? "Using existing packed.pak" : "Please import packed.pak";
+    state.lastStatus = state.canLaunch ? launcherText("status.packedPakReady", "Using existing packed.pak") : launcherText("status.packedPakMissing", "Please import packed.pak");
   }
 
-  std::vector<pair<char const*, MobileTouchAction>> touchActionChoices() const {
+  std::vector<pair<String, MobileTouchAction>> touchActionChoices() const {
     return {
-      {"Left Hand / Mouse Left", mouseAction(MouseButton::Left)},
-      {"Right Hand / Mouse Right", mouseAction(MouseButton::Right)},
-      {"Jump / J (Space)", keyAction(Key::Space)},
-      {"Interact / E", keyAction(Key::E)},
-      {"Escape / Pause", keyAction(Key::Escape)},
-      {"Chat / T (Enter)", keyAction(Key::Return)},
-      {"Tech / F", keyAction(Key::F)},
-      {"Swap Hotbar / X", keyAction(Key::X)},
-      {"Drop Item / Q", keyAction(Key::Q)},
-      {"Shift", keyAction(Key::LShift)},
-      {"Ctrl", keyAction(Key::LCtrl)},
-      {"Move Up / W", keyAction(Key::W)},
-      {"Move Down / S", keyAction(Key::S)},
-      {"Move Left / A", keyAction(Key::A)},
-      {"Move Right / D", keyAction(Key::D)},
-      {"Inventory / I", keyAction(Key::I)},
-      {"Codex / L", keyAction(Key::L)},
-      {"Quest / J", keyAction(Key::J)},
-      {"Crafting / C", keyAction(Key::C)},
-      {"Action Bar 1", keyAction(Key::One)},
-      {"Action Bar 2", keyAction(Key::Two)},
-      {"Action Bar 3", keyAction(Key::Three)},
-      {"Action Bar 4", keyAction(Key::Four)},
-      {"Action Bar 5", keyAction(Key::Five)},
-      {"Scroll Up", wheelAction(true)},
-      {"Scroll Down", wheelAction(false)},
-      {"Gyro Toggle", gyroToggleAction()},
-      {"No Action", noneAction()}
+      {launcherText("touchActionChoice.leftHandMouseLeft", "Left Hand / Mouse Left"), mouseAction(MouseButton::Left)},
+      {launcherText("touchActionChoice.rightHandMouseRight", "Right Hand / Mouse Right"), mouseAction(MouseButton::Right)},
+      {launcherText("touchActionChoice.jump", "Jump / J (Space)"), keyAction(Key::Space)},
+      {launcherText("touchActionChoice.interact", "Interact / E"), keyAction(Key::E)},
+      {launcherText("touchActionChoice.escapePause", "Escape / Pause"), keyAction(Key::Escape)},
+      {launcherText("touchActionChoice.chat", "Chat / T (Enter)"), keyAction(Key::Return)},
+      {launcherText("touchActionChoice.tech", "Tech / F"), keyAction(Key::F)},
+      {launcherText("touchActionChoice.swapHotbar", "Swap Hotbar / X"), keyAction(Key::X)},
+      {launcherText("touchActionChoice.dropItem", "Drop Item / Q"), keyAction(Key::Q)},
+      {launcherText("touchActionChoice.shift", "Shift"), keyAction(Key::LShift)},
+      {launcherText("touchActionChoice.ctrl", "Ctrl"), keyAction(Key::LCtrl)},
+      {launcherText("touchActionChoice.moveUp", "Move Up / W"), keyAction(Key::W)},
+      {launcherText("touchActionChoice.moveDown", "Move Down / S"), keyAction(Key::S)},
+      {launcherText("touchActionChoice.moveLeft", "Move Left / A"), keyAction(Key::A)},
+      {launcherText("touchActionChoice.moveRight", "Move Right / D"), keyAction(Key::D)},
+      {launcherText("touchActionChoice.inventory", "Inventory / I"), keyAction(Key::I)},
+      {launcherText("touchActionChoice.codex", "Codex / L"), keyAction(Key::L)},
+      {launcherText("touchActionChoice.quest", "Quest / J"), keyAction(Key::J)},
+      {launcherText("touchActionChoice.crafting", "Crafting / C"), keyAction(Key::C)},
+      {launcherText("touchActionChoice.actionBar1", "Action Bar 1"), keyAction(Key::One)},
+      {launcherText("touchActionChoice.actionBar2", "Action Bar 2"), keyAction(Key::Two)},
+      {launcherText("touchActionChoice.actionBar3", "Action Bar 3"), keyAction(Key::Three)},
+      {launcherText("touchActionChoice.actionBar4", "Action Bar 4"), keyAction(Key::Four)},
+      {launcherText("touchActionChoice.actionBar5", "Action Bar 5"), keyAction(Key::Five)},
+      {launcherText("touchActionChoice.scrollUp", "Scroll Up"), wheelAction(true)},
+      {launcherText("touchActionChoice.scrollDown", "Scroll Down"), wheelAction(false)},
+      {launcherText("touchActionChoice.gyroToggle", "Gyro Toggle"), gyroToggleAction()},
+      {launcherText("touchActionChoice.noAction", "No Action"), noneAction()}
     };
   }
 
@@ -2891,7 +3179,7 @@ private:
 
     char const frames[] = "|/-\\";
     int frame = (int)std::floor(ImGui::GetTime() * 10.0) & 3;
-    String label = state.asyncActionName.empty() ? "Importing" : state.asyncActionName;
+    String label = state.asyncActionName.empty() ? launcherText("common.importing", "Importing") : state.asyncActionName;
     ImGui::Text("%c %s", frames[frame], label.utf8Ptr());
   }
 
@@ -2911,10 +3199,10 @@ private:
   void renderTouchActionCombo(LauncherState& state, char const* label, MobileTouchAction& action, String const& bufferId) {
     auto choices = touchActionChoices();
     int index = touchActionIndex(action);
-    if (ImGui::BeginCombo(label, choices[index].first)) {
+    if (ImGui::BeginCombo(label, choices[index].first.utf8Ptr())) {
       for (size_t i = 0; i < choices.size(); ++i) {
         bool selected = index == (int)i;
-        if (ImGui::Selectable(choices[i].first, selected)) {
+        if (ImGui::Selectable(choices[i].first.utf8Ptr(), selected)) {
           index = (int)i;
           action = choices[i].second;
           if (auto buffer = state.touchActionBuffers.ptr(bufferId))
@@ -2934,15 +3222,15 @@ private:
 
     auto& buffer = state.touchActionBuffers[bufferId];
     ImGui::PushID(bufferId.utf8Ptr());
-    float applyWidth = imguiButtonWidth("Apply");
+    float applyWidth = imguiButtonWidth(launcherText("common.apply", "Apply").utf8Ptr());
     float availableWidth = ImGui::GetContentRegionAvail().x;
     bool inlineApply = availableWidth >= applyWidth + ImGui::GetStyle().ItemSpacing.x + 180.0f;
     if (inlineApply)
       ImGui::SetNextItemWidth(availableWidth - applyWidth - ImGui::GetStyle().ItemSpacing.x);
-    ImGui::InputTextWithHint("Custom keys", "Example: LShift+F1 or Ctrl,Alt,E", buffer.data(), buffer.size());
+    ImGui::InputTextWithHint(launcherText("touchManager.customKeys", "Custom keys").utf8Ptr(), launcherText("touchManager.customKeysHint", "Example: LShift+F1 or Ctrl,Alt,E").utf8Ptr(), buffer.data(), buffer.size());
     if (inlineApply)
       ImGui::SameLine();
-    if (ImGui::Button("Apply")) {
+    if (ImGui::Button(launcherText("common.apply", "Apply").utf8Ptr())) {
       auto keys = keysFromText(String(buffer.data()));
       if (keys.size() == 1)
         action = keyAction(keys[0]);
@@ -2954,10 +3242,10 @@ private:
 
   void renderTouchPressModeCombo(MobileTouchElement& element) {
     std::vector<pair<char const*, MobileTouchPressMode>> choices{
-      {"Single press", MobileTouchPressMode::SinglePress},
-      {"Rapid fire / repeat", MobileTouchPressMode::Repeat},
-      {"Hold", MobileTouchPressMode::Hold},
-      {"Toggle", MobileTouchPressMode::Toggle}
+      {launcherText("touchManager.pressMode.single", "Single press").utf8Ptr(), MobileTouchPressMode::SinglePress},
+      {launcherText("touchManager.pressMode.repeat", "Rapid fire / repeat").utf8Ptr(), MobileTouchPressMode::Repeat},
+      {launcherText("touchManager.pressMode.hold", "Hold").utf8Ptr(), MobileTouchPressMode::Hold},
+      {launcherText("touchManager.pressMode.toggle", "Toggle").utf8Ptr(), MobileTouchPressMode::Toggle}
     };
     int index = 0;
     for (int i = 0; i < (int)choices.size(); ++i) {
@@ -2966,7 +3254,7 @@ private:
         break;
       }
     }
-    if (ImGui::BeginCombo("Button behavior", choices[index].first)) {
+    if (ImGui::BeginCombo(launcherText("touchManager.buttonBehavior", "Button behavior").utf8Ptr(), choices[index].first)) {
       for (int i = 0; i < (int)choices.size(); ++i) {
         bool selected = index == i;
         if (ImGui::Selectable(choices[i].first, selected))
@@ -3008,7 +3296,7 @@ private:
       draw->AddRectFilled(ImVec2(center.x - arm, center.y - radius), ImVec2(center.x + arm, center.y + radius), fill, arm * 0.2f);
       draw->AddRectFilled(ImVec2(center.x - radius, center.y - arm), ImVec2(center.x + radius, center.y + arm), fill, arm * 0.2f);
       draw->AddRect(ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius), base, arm * 0.25f, 0, 3.0f);
-      draw->AddText(ImVec2(center.x - radius * 0.38f, center.y - radius * 0.18f), base, "D-PAD");
+      draw->AddText(ImVec2(center.x - radius * 0.38f, center.y - radius * 0.18f), base, launcherText("touchElement.dpad", "D-PAD").utf8Ptr());
     } else if (element.kind == MobileTouchElementKind::Joystick || element.kind == MobileTouchElementKind::AimJoystick) {
       draw->AddCircle(center, radius, base, 48, 3.0f);
       draw->AddCircleFilled(center, radius * 0.34f, fill, 32);
@@ -3022,7 +3310,7 @@ private:
   void renderTouchPreview(LauncherState& state, ImVec2 displaySize) {
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(displaySize, ImGuiCond_Always);
-    ImGui::Begin("Touch Layout Preview", nullptr,
+    ImGui::Begin(launcherText("touchPreview.windowTitle", "Touch Layout Preview").utf8Ptr(), nullptr,
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar);
 
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -3031,13 +3319,13 @@ private:
 
     ImGui::SetCursorScreenPos(ImVec2(min.x + 16.0f, min.y + 16.0f));
     ImGui::BeginChild("TouchPreviewToolbar", ImVec2(std::min(520.0f, displaySize.x - 32.0f), 150.0f), true);
-    ImGui::Text("Touch Layout Preview");
+    ImGui::TextUnformatted(launcherText("touchPreview.title", "Touch Layout Preview").utf8Ptr());
     if (state.selectedTouchElement >= 0 && state.selectedTouchElement < (int)state.touchElements.size()) {
       auto& selected = state.touchElements[state.selectedTouchElement];
-      ImGui::Text("Selected: %s", selected.label.utf8Ptr());
-      ImGui::SliderFloat("Selected size", &selected.size, 0.45f, 2.4f);
+      ImGui::Text("%s: %s", launcherText("touchPreview.selectedLabel", "Selected").utf8Ptr(), selected.label.utf8Ptr());
+      ImGui::SliderFloat(launcherText("touchPreview.selectedSize", "Selected size").utf8Ptr(), &selected.size, 0.45f, 2.4f);
     }
-    if (ImGui::Button("Done"))
+    if (ImGui::Button(launcherText("common.done", "Done").utf8Ptr()))
       state.touchPreviewOpen = false;
     ImGui::EndChild();
 
@@ -3050,22 +3338,54 @@ private:
   }
 
   void renderLauncherUiSettings(LauncherState& state) {
+    static String lastLoggedLocale;
+    static String lastLoggedLanguageLabel;
     beginLauncherScrollArea("LauncherUiSettingsScroll", state);
 
-    ImGui::Text("Launcher UI Settings");
+    ImGui::TextUnformatted(launcherText("uiSettings.title", "Launcher UI Settings").utf8Ptr());
     ImGui::Separator();
 
-    if (ImGui::Button("Back to Launcher"))
+    if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
       state.uiSettingsOpen = false;
-    sameLineIfNextFits(imguiButtonWidth("Save"));
-    if (ImGui::Button("Save"))
+    sameLineIfNextFits(imguiButtonWidth(launcherText("common.save", "Save").utf8Ptr()));
+    if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr())) {
       persistLauncherState(state);
+      reloadLauncherLocalization(state.locale);
+    }
 
-    ImGui::SliderFloat("Launcher UI size", &state.uiConfig.scale, 0.75f, 1.75f, "%.2fx");
-    ImGui::ColorEdit3("Accent color", state.uiConfig.accentColor.data(),
+    std::vector<pair<String, String>> localeChoices{
+      {launcherText("uiSettings.language.system", "System default"), SystemLocaleMarker},
+      {launcherText("uiSettings.language.english", "English"), String("en_US")},
+      {launcherText("uiSettings.language.simplifiedChinese", "简体中文"), String("zh_CN")}
+    };
+    int localeIndex = 0;
+    for (int i = 0; i < (int)localeChoices.size(); ++i) {
+      if (localeChoices[i].second == state.locale) {
+        localeIndex = i;
+        break;
+      }
+      if (i == 0 && state.locale == state.systemLocale)
+        localeIndex = 0;
+    }
+    if (ImGui::BeginCombo(launcherText("uiSettings.language", "Language").utf8Ptr(), localeChoices[localeIndex].first.utf8Ptr())) {
+      for (int i = 0; i < (int)localeChoices.size(); ++i) {
+        bool selected = localeIndex == i;
+        if (ImGui::Selectable(localeChoices[i].first.utf8Ptr(), selected)) {
+          state.locale = localeChoices[i].second;
+          reloadLauncherLocalization(state.locale);
+          persistLauncherState(state);
+        }
+        if (selected)
+          ImGui::SetItemDefaultFocus();
+      }
+      ImGui::EndCombo();
+    }
+
+    ImGui::SliderFloat(launcherText("uiSettings.scale", "Launcher UI size").utf8Ptr(), &state.uiConfig.scale, 0.75f, 1.75f, "%.2fx");
+    ImGui::ColorEdit3(launcherText("uiSettings.accentColor", "Accent color").utf8Ptr(), state.uiConfig.accentColor.data(),
         ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha);
 
-    if (ImGui::Button("Reset UI Settings")) {
+    if (ImGui::Button(launcherText("uiSettings.reset", "Reset UI Settings").utf8Ptr())) {
       state.uiConfig = LauncherUiConfig();
       applyLauncherUiConfig(state.uiConfig);
     }
@@ -3078,60 +3398,60 @@ private:
     if (!gyroAvailable)
       state.touchConfig.gyroEnabled = false;
 
-    ImGui::Text("Touch Controls Manager");
+    ImGui::TextUnformatted(launcherText("touchManager.title", "Touch Controls Manager").utf8Ptr());
     ImGui::Separator();
 
     beginLauncherScrollArea("TouchManagerScroll", state);
-    if (ImGui::Button("Back to Launcher"))
+    if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
       state.touchManagerOpen = false;
-    sameLineIfNextFits(imguiButtonWidth("Preview / Adjust Layout"));
-    if (ImGui::Button("Preview / Adjust Layout"))
+    sameLineIfNextFits(imguiButtonWidth(launcherText("touchManager.previewAdjust", "Preview / Adjust Layout").utf8Ptr()));
+    if (ImGui::Button(launcherText("touchManager.previewAdjust", "Preview / Adjust Layout").utf8Ptr()))
       state.touchPreviewOpen = true;
-    sameLineIfNextFits(imguiButtonWidth("Save"));
-    if (ImGui::Button("Save"))
+    sameLineIfNextFits(imguiButtonWidth(launcherText("common.save", "Save").utf8Ptr()));
+    if (ImGui::Button(launcherText("common.save", "Save").utf8Ptr()))
       persistLauncherState(state);
 
-    ImGui::Checkbox("Enable touch overlay", &state.touchConfig.enabled);
-    ImGui::Checkbox("Enable direct screen touch gestures", &state.touchConfig.directTouchGestures);
+    ImGui::Checkbox(launcherText("touchManager.enableOverlay", "Enable touch overlay").utf8Ptr(), &state.touchConfig.enabled);
+    ImGui::Checkbox(launcherText("touchManager.enableDirectGestures", "Enable direct screen touch gestures").utf8Ptr(), &state.touchConfig.directTouchGestures);
     ImGui::BeginDisabled(!gyroAvailable);
-    ImGui::Checkbox("Enable gyro aim", &state.touchConfig.gyroEnabled);
+    ImGui::Checkbox(launcherText("touchManager.enableGyroAim", "Enable gyro aim").utf8Ptr(), &state.touchConfig.gyroEnabled);
     ImGui::EndDisabled();
     if (!gyroAvailable) {
       ImGui::SameLine();
-      ImGui::TextDisabled("No gyro found");
+      ImGui::TextDisabled("%s", launcherText("touchManager.noGyroFound", "No gyro found").utf8Ptr());
     }
-    ImGui::SliderFloat("Overlay opacity", &state.touchConfig.opacity, 0.0f, 1.0f);
-    ImGui::SliderFloat("Global control size", &state.touchConfig.size, 0.6f, 1.8f);
-    ImGui::SliderFloat("Joystick deadzone", &state.touchConfig.deadzone, 0.0f, 0.6f);
+    ImGui::SliderFloat(launcherText("touchManager.overlayOpacity", "Overlay opacity").utf8Ptr(), &state.touchConfig.opacity, 0.0f, 1.0f);
+    ImGui::SliderFloat(launcherText("touchManager.globalControlSize", "Global control size").utf8Ptr(), &state.touchConfig.size, 0.6f, 1.8f);
+    ImGui::SliderFloat(launcherText("touchManager.joystickDeadzone", "Joystick deadzone").utf8Ptr(), &state.touchConfig.deadzone, 0.0f, 0.6f);
     ImGui::BeginDisabled(!gyroAvailable);
-    ImGui::SliderFloat("Gyro sensitivity", &state.touchConfig.gyroSensitivity, 0.10f, 12.0f);
-    ImGui::Checkbox("Invert gyro X axis", &state.touchConfig.gyroInvertX);
-    ImGui::Checkbox("Invert gyro Y axis", &state.touchConfig.gyroInvertY);
+    ImGui::SliderFloat(launcherText("touchManager.gyroSensitivity", "Gyro sensitivity").utf8Ptr(), &state.touchConfig.gyroSensitivity, 0.10f, 12.0f);
+    ImGui::Checkbox(launcherText("touchManager.invertGyroX", "Invert gyro X axis").utf8Ptr(), &state.touchConfig.gyroInvertX);
+    ImGui::Checkbox(launcherText("touchManager.invertGyroY", "Invert gyro Y axis").utf8Ptr(), &state.touchConfig.gyroInvertY);
     ImGui::EndDisabled();
 
-    if (ImGui::Button("New Button")) {
+    if (ImGui::Button(launcherText("touchManager.newButton", "New Button").utf8Ptr())) {
       state.newTouchButtonPopup = true;
       state.newTouchActionIndex = 0;
       state.newTouchButtonSize = 1.0f;
-      ImGui::OpenPopup("New Touch Button");
+      ImGui::OpenPopup(launcherText("touchManager.newButtonPopupTitle", "New Touch Button").utf8Ptr());
     }
 
-    if (ImGui::BeginPopupModal("New Touch Button", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (ImGui::BeginPopupModal(launcherText("touchManager.newButtonPopupTitle", "New Touch Button").utf8Ptr(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
       auto choices = touchActionChoices();
       if (state.newTouchActionIndex < 0 || state.newTouchActionIndex >= (int)choices.size())
         state.newTouchActionIndex = 0;
-      if (ImGui::BeginCombo("Interaction", choices[state.newTouchActionIndex].first)) {
+      if (ImGui::BeginCombo(launcherText("touchManager.interaction", "Interaction").utf8Ptr(), choices[state.newTouchActionIndex].first.utf8Ptr())) {
         for (int i = 0; i < (int)choices.size(); ++i) {
           bool selected = state.newTouchActionIndex == i;
-          if (ImGui::Selectable(choices[i].first, selected))
+          if (ImGui::Selectable(choices[i].first.utf8Ptr(), selected))
             state.newTouchActionIndex = i;
           if (selected)
             ImGui::SetItemDefaultFocus();
         }
         ImGui::EndCombo();
       }
-      ImGui::SliderFloat("Button size", &state.newTouchButtonSize, 0.45f, 2.4f);
-      if (ImGui::Button("Create", ImVec2(140.0f, 0.0f))) {
+      ImGui::SliderFloat(launcherText("touchManager.buttonSize", "Button size").utf8Ptr(), &state.newTouchButtonSize, 0.45f, 2.4f);
+      if (ImGui::Button(launcherText("common.create", "Create").utf8Ptr(), ImVec2(140.0f, 0.0f))) {
         auto action = choices[state.newTouchActionIndex].second;
         MobileTouchElement element;
         element.id = strf("custom{}", state.touchElements.size() + 1);
@@ -3146,8 +3466,8 @@ private:
         state.touchPreviewOpen = true;
         ImGui::CloseCurrentPopup();
       }
-      sameLineIfNextFits(imguiButtonWidth("Cancel", ImVec2(140.0f, 0.0f)));
-      if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f)))
+      sameLineIfNextFits(imguiButtonWidth(launcherText("common.cancel", "Cancel").utf8Ptr(), ImVec2(140.0f, 0.0f)));
+      if (ImGui::Button(launcherText("common.cancel", "Cancel").utf8Ptr(), ImVec2(140.0f, 0.0f)))
         ImGui::CloseCurrentPopup();
       ImGui::EndPopup();
     }
@@ -3161,7 +3481,7 @@ private:
         ImGui::Checkbox("##enabled", &element.enabled);
         ImGui::SameLine();
         bool selected = state.selectedTouchElement == i;
-        String listLabel = element.label.empty() ? String("(blank)") : element.label;
+        String listLabel = element.label.empty() ? launcherText("touchManager.blankLabel", "(blank)") : element.label;
         if (ImGui::Selectable(listLabel.utf8Ptr(), selected, ImGuiSelectableFlags_AllowItemOverlap))
           state.selectedTouchElement = i;
         if (selected) {
@@ -3171,31 +3491,31 @@ private:
             std::snprintf(state.touchLabelBuffer, sizeof(state.touchLabelBuffer), "%s", element.label.utf8Ptr());
           }
           if (element.kind == MobileTouchElementKind::Button) {
-            if (ImGui::InputText("Displayed text", state.touchLabelBuffer, sizeof(state.touchLabelBuffer)))
+            if (ImGui::InputText(launcherText("touchManager.displayedText", "Displayed text").utf8Ptr(), state.touchLabelBuffer, sizeof(state.touchLabelBuffer)))
               element.label = String(state.touchLabelBuffer).trim();
           }
-          ImGui::SliderFloat("Size", &element.size, 0.45f, 2.4f);
+          ImGui::SliderFloat(launcherText("touchManager.elementSize", "Size").utf8Ptr(), &element.size, 0.45f, 2.4f);
           float position[2] = {element.position[0], element.position[1]};
-          if (ImGui::SliderFloat2("Position", position, 0.03f, 0.97f))
+          if (ImGui::SliderFloat2(launcherText("touchManager.position", "Position").utf8Ptr(), position, 0.03f, 0.97f))
             element.position = {position[0], position[1]};
           if (element.kind == MobileTouchElementKind::Button) {
-            renderTouchActionCombo(state, "Interaction", element.action, element.id + ":action");
+            renderTouchActionCombo(state, launcherText("touchManager.interaction", "Interaction").utf8Ptr(), element.action, element.id + ":action");
             renderTouchPressModeCombo(element);
           }
           else if (element.kind == MobileTouchElementKind::DPad) {
-            renderTouchActionCombo(state, "Up", element.upAction, element.id + ":up");
-            renderTouchActionCombo(state, "Down", element.downAction, element.id + ":down");
-            renderTouchActionCombo(state, "Left", element.leftAction, element.id + ":left");
-            renderTouchActionCombo(state, "Right", element.rightAction, element.id + ":right");
+            renderTouchActionCombo(state, launcherText("touchManager.directionUp", "Up").utf8Ptr(), element.upAction, element.id + ":up");
+            renderTouchActionCombo(state, launcherText("touchManager.directionDown", "Down").utf8Ptr(), element.downAction, element.id + ":down");
+            renderTouchActionCombo(state, launcherText("touchManager.directionLeft", "Left").utf8Ptr(), element.leftAction, element.id + ":left");
+            renderTouchActionCombo(state, launcherText("touchManager.directionRight", "Right").utf8Ptr(), element.rightAction, element.id + ":right");
           } else if (element.kind == MobileTouchElementKind::AimJoystick) {
-            ImGui::Checkbox("Precise aim", &element.preciseAim);
-            ImGui::SliderFloat("Aim sensitivity", &element.aimSensitivity, 0.25f, 4.0f);
+            ImGui::Checkbox(launcherText("touchManager.preciseAim", "Precise aim").utf8Ptr(), &element.preciseAim);
+            ImGui::SliderFloat(launcherText("touchManager.aimSensitivity", "Aim sensitivity").utf8Ptr(), &element.aimSensitivity, 0.25f, 4.0f);
             if (element.preciseAim)
-              ImGui::TextDisabled("Precise aim moves the virtual cursor.");
+              ImGui::TextDisabled("%s", launcherText("touchManager.preciseAimHint", "Precise aim moves the virtual cursor.").utf8Ptr());
             else
-              ImGui::TextDisabled("Directional aim points around the player.");
+              ImGui::TextDisabled("%s", launcherText("touchManager.directionalAimHint", "Directional aim points around the player.").utf8Ptr());
           } else {
-            ImGui::TextDisabled("Joystick sends movement keys.");
+            ImGui::TextDisabled("%s", launcherText("touchManager.joystickHint", "Joystick sends movement keys.").utf8Ptr());
           }
           ImGui::Unindent();
         }
@@ -3207,10 +3527,18 @@ private:
   }
 
   bool runLauncher(LauncherState& state) {
+    static bool loggedLauncherFrame = false;
     syncWindowMetrics(false);
     processWindowEvents();
     syncWindowMetrics(false);
     applyLauncherUiConfig(state.uiConfig);
+
+    if (!loggedLauncherFrame) {
+      androidLogInfo("runLauncher: uiSettingsOpen=%d modManagerOpen=%d touchManagerOpen=%d locale=%s status=%s",
+        state.uiSettingsOpen ? 1 : 0, state.modManagerOpen ? 1 : 0, state.touchManagerOpen ? 1 : 0,
+        state.locale.utf8Ptr(), state.lastStatus.utf8Ptr());
+      loggedLauncherFrame = true;
+    }
 
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
@@ -3221,21 +3549,21 @@ private:
     ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
     ImGui::Begin(
-      "OpenStarbound Mobile Loader",
+      launcherText("launcher.title", "OpenStarbound Mobile Loader").utf8Ptr(),
       nullptr,
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar
     );
 
-    auto runLauncherAction = [&state](String const& actionName, std::function<void()> const& fn) {
+    auto runLauncherAction = [this, &state](String const& actionName, std::function<void()> const& fn) {
       try {
         fn();
       } catch (std::exception const& e) {
-        state.lastStatus = strf("{} failed.", actionName);
+        state.lastStatus = strf("{} {}", actionName, launcherText("runtime.actionFailedSuffix", "failed."));
         state.lastError = strf("({}) {}", actionName, outputException(e, true));
         Logger::error("Launcher action '{}' failed: {}", actionName, state.lastError);
       } catch (...) {
-        state.lastStatus = strf("{} failed.", actionName);
-        state.lastError = strf("({}) Unknown runtime failure", actionName);
+        state.lastStatus = strf("{} {}", actionName, launcherText("runtime.actionFailedSuffix", "failed."));
+        state.lastError = strf("({}) {}", actionName, launcherText("runtime.unknownFailure", "Unknown runtime failure"));
         Logger::error("Launcher action '{}' failed: unknown runtime failure", actionName);
       }
     };
@@ -3271,10 +3599,10 @@ private:
       }
     };
 
-    auto runLauncherActionAsync = [&state](String const& actionName, std::function<LauncherActionResult()> const& fn) {
+    auto runLauncherActionAsync = [this, &state](String const& actionName, std::function<LauncherActionResult()> const& fn) {
       if (state.asyncActionRunning) {
-        state.lastStatus = "Native file picker is already open.";
-        state.lastError = "Finish or cancel the current picker before starting another import.";
+        state.lastStatus = launcherText("status.nativePickerAlreadyOpen", "Native file picker is already open.");
+        state.lastError = launcherText("error.finishCurrentPickerFirst", "Finish or cancel the current picker before starting another import.");
         return;
       }
 
@@ -3283,13 +3611,13 @@ private:
 
       String progressName = actionName;
       if (actionName == "Import mod (.pak)")
-        progressName = "Importing mod (.pak)";
+        progressName = launcherText("status.importingModPak", "Importing mod (.pak)");
       else if (actionName == "Import mod folder (.zip)")
-        progressName = "Importing mod folder (.zip)";
+        progressName = launcherText("status.importingModFolderZip", "Importing mod folder (.zip)");
       else if (actionName == "Import mods folder (.zip)")
-        progressName = "Importing mods folder (.zip)";
+        progressName = launcherText("status.importingModsFolderZip", "Importing mods folder (.zip)");
       else if (actionName == "Import packed.pak")
-        progressName = "Importing packed.pak";
+        progressName = launcherText("status.importingPackedPak", "Importing packed.pak");
 
       {
         std::lock_guard<std::mutex> lock(state.asyncActionMutex);
@@ -3301,17 +3629,17 @@ private:
       state.lastStatus = strf("{}...", progressName);
       state.lastError.clear();
 
-      state.asyncActionThread = std::thread([&state, actionName, fn]() {
+      state.asyncActionThread = std::thread([this, &state, actionName, fn]() {
         LauncherActionResult result;
         try {
           result = fn();
         } catch (std::exception const& e) {
-          result.status = strf("{} failed.", actionName);
+          result.status = strf("{} {}", actionName, launcherText("runtime.actionFailedSuffix", "failed."));
           result.error = strf("({}) {}", actionName, outputException(e, true));
           Logger::error("Launcher action '{}' failed: {}", actionName, result.error);
         } catch (...) {
-          result.status = strf("{} failed.", actionName);
-          result.error = strf("({}) Unknown runtime failure", actionName);
+          result.status = strf("{} {}", actionName, launcherText("runtime.actionFailedSuffix", "failed."));
+          result.error = strf("({}) {}", actionName, launcherText("runtime.unknownFailure", "Unknown runtime failure"));
           Logger::error("Launcher action '{}' failed: unknown runtime failure", actionName);
         }
 
@@ -3340,43 +3668,43 @@ private:
       bool requestDeletePopup = false;
       beginLauncherScrollArea("ModManagerScroll", state);
 
-      ImGui::Text("Mod Manager");
-      ImGui::TextWrapped("Browse installed mods, import new mods, and delete entries.");
+      ImGui::TextUnformatted(launcherText("modManager.title", "Mod Manager").utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("modManager.description", "Browse installed mods, import new mods, and delete entries.").utf8Ptr());
       ImGui::Separator();
 
-      if (ImGui::Button("Back to Launcher"))
+      if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
         state.modManagerOpen = false;
-      sameLineIfNextFits(imguiButtonWidth("Refresh List"));
-      if (ImGui::Button("Refresh List"))
+      sameLineIfNextFits(imguiButtonWidth(launcherText("common.refreshList", "Refresh List").utf8Ptr()));
+      if (ImGui::Button(launcherText("common.refreshList", "Refresh List").utf8Ptr()))
         state.modListDirty = true;
 
-      ImGui::InputTextWithHint("##modsearch", "Search mods...", state.modSearchBuffer, sizeof(state.modSearchBuffer));
-      ImGui::Checkbox("Show .pak mods", &state.modShowPackedPaks);
-      sameLineIfNextFits(ImGui::CalcTextSize("Show unpacked folders").x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f);
-      ImGui::Checkbox("Show unpacked folders", &state.modShowUnpackedFolders);
-      ImGui::TextWrapped("Mods directory: %s", modsPath.utf8Ptr());
+      ImGui::InputTextWithHint("##modsearch", launcherText("modManager.searchHint", "Search mods...").utf8Ptr(), state.modSearchBuffer, sizeof(state.modSearchBuffer));
+      ImGui::Checkbox(launcherText("modManager.showPakMods", "Show .pak mods").utf8Ptr(), &state.modShowPackedPaks);
+      sameLineIfNextFits(ImGui::CalcTextSize(launcherText("modManager.showUnpackedFolders", "Show unpacked folders").utf8Ptr()).x + ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f);
+      ImGui::Checkbox(launcherText("modManager.showUnpackedFolders", "Show unpacked folders").utf8Ptr(), &state.modShowUnpackedFolders);
+      ImGui::TextWrapped("%s: %s", launcherText("modManager.modsDirectoryLabel", "Mods directory").utf8Ptr(), modsPath.utf8Ptr());
 
       renderLauncherBusyIndicator(state);
       if (state.asyncActionRunning)
-        ImGui::TextWrapped("Finish or cancel the native picker to continue.");
+        ImGui::TextWrapped("%s", launcherText("modManager.asyncBlockedHint", "Finish or cancel the native picker to continue.").utf8Ptr());
       ImGui::BeginDisabled(state.asyncActionRunning);
-      if (ImGui::Button("Import mod (.pak)")) {
+      if (ImGui::Button(launcherText("modManager.importPak", "Import mod (.pak)").utf8Ptr())) {
 #ifdef STAR_SYSTEM_IOS
         auto svc = m_platformServices->externalFileAccessService();
-        runLauncherActionAsync("Import mod (.pak)", [svc]() {
+        runLauncherActionAsync("Import mod (.pak)", [this, svc]() {
           if (svc) {
             auto imported = svc->importModPakFiles();
             return LauncherActionResult{
-              imported.empty() ? "No mod imported." : strf("Imported {} mod(s)", imported.size()),
-              imported.empty() ? "No .pak selected or import failed." : "",
+              imported.empty() ? launcherText("status.noModImported", "No mod imported.") : strf("{} {}", launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size())),
+              imported.empty() ? launcherText("error.noPakSelectedOrImportFailed", "No .pak selected or import failed.") : "",
               true,
               {}
             };
           }
 
           return LauncherActionResult{
-            "Import unavailable.",
-            "ExternalFileAccessService is unavailable on this platform build.",
+            launcherText("status.importUnavailable", "Import unavailable."),
+            launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build."),
             false,
             {}
           };
@@ -3385,42 +3713,42 @@ private:
         runLauncherAction("Import mod (.pak)", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importModPakFiles();
-            state.lastStatus = imported.empty() ? "No mod imported." : strf("Imported {} mod(s)", imported.size());
+            state.lastStatus = imported.empty() ? launcherText("status.noModImported", "No mod imported.") : strf("{} {}", launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size()));
             if (imported.empty())
-              state.lastError = "No .pak selected or import failed.";
+              state.lastError = launcherText("error.noPakSelectedOrImportFailed", "No .pak selected or import failed.");
             else
               state.lastError.clear();
             state.modListDirty = true;
           } else {
-            state.lastStatus = "Import unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.importUnavailable", "Import unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
 #endif
       }
       if (ImGui::Button(
 #ifdef STAR_SYSTEM_IOS
-            "Import mod folder (.zip)"
+            launcherText("modManager.importSingleZip", "Import mod folder (.zip)").utf8Ptr()
 #else
-            "Import mod folder (single mod)"
+            launcherText("modManager.importSingleFolder", "Import mod folder (single mod)").utf8Ptr()
 #endif
           )) {
 #ifdef STAR_SYSTEM_IOS
         auto svc = m_platformServices->externalFileAccessService();
-        runLauncherActionAsync("Import mod folder (.zip)", [svc]() {
+        runLauncherActionAsync("Import mod folder (.zip)", [this, svc]() {
           if (svc) {
             auto imported = svc->importSingleModFolder();
             return LauncherActionResult{
-              imported.empty() ? "No mod folder zip imported." : strf("Imported {} mod(s)", imported.size()),
-              imported.empty() ? "No .zip selected or import failed." : "",
+              imported.empty() ? launcherText("status.noSingleModZipImported", "No mod folder zip imported.") : strf("{} {}", launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size())),
+              imported.empty() ? launcherText("error.noZipSelectedOrImportFailed", "No .zip selected or import failed.") : "",
               true,
               {}
             };
           }
 
           return LauncherActionResult{
-            "Import unavailable.",
-            "ExternalFileAccessService is unavailable on this platform build.",
+            launcherText("status.importUnavailable", "Import unavailable."),
+            launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build."),
             false,
             {}
           };
@@ -3429,42 +3757,42 @@ private:
         runLauncherAction("Import mod folder", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importSingleModFolder();
-            state.lastStatus = imported.empty() ? "No mod folder imported." : strf("Imported {} mod(s)", imported.size());
+            state.lastStatus = imported.empty() ? launcherText("status.noSingleModFolderImported", "No mod folder imported.") : strf("{} {}", launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size()));
             if (imported.empty())
-              state.lastError = "No folder selected or import failed.";
+              state.lastError = launcherText("error.noFolderSelectedOrImportFailed", "No folder selected or import failed.");
             else
               state.lastError.clear();
             state.modListDirty = true;
           } else {
-            state.lastStatus = "Import unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.importUnavailable", "Import unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
 #endif
       }
       if (ImGui::Button(
 #ifdef STAR_SYSTEM_IOS
-            "Import mods folder (.zip)"
+            launcherText("modManager.importAllZip", "Import mods folder (.zip)").utf8Ptr()
 #else
-            "Import mods folder (all .pak and folders)"
+            launcherText("modManager.importAllFolder", "Import mods folder (all .pak and folders)").utf8Ptr()
 #endif
           )) {
 #ifdef STAR_SYSTEM_IOS
         auto svc = m_platformServices->externalFileAccessService();
-        runLauncherActionAsync("Import mods folder (.zip)", [svc]() {
+        runLauncherActionAsync("Import mods folder (.zip)", [this, svc]() {
           if (svc) {
             auto imported = svc->importModsDirectory();
             return LauncherActionResult{
-              imported.empty() ? "No mods zip imported." : strf("Imported {} mod(s)", imported.size()),
-              imported.empty() ? "No .zip selected or no valid mods found." : "",
+              imported.empty() ? launcherText("status.noModsZipImported", "No mods zip imported.") : strf("{} {}", launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size())),
+              imported.empty() ? launcherText("error.noZipSelectedOrNoValidMods", "No .zip selected or no valid mods found.") : "",
               true,
               {}
             };
           }
 
           return LauncherActionResult{
-            "Import unavailable.",
-            "ExternalFileAccessService is unavailable on this platform build.",
+            launcherText("status.importUnavailable", "Import unavailable."),
+            launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build."),
             false,
             {}
           };
@@ -3473,15 +3801,15 @@ private:
         runLauncherAction("Import mods folder", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             auto imported = svc->importModsDirectory();
-            state.lastStatus = imported.empty() ? "No mods imported." : strf("Imported {} mod(s)", imported.size());
+            state.lastStatus = imported.empty() ? launcherText("status.noModsImported", "No mods imported.") : strf("{} {}", launcherText("status.imported", "Imported"), strf("{} mod(s)", imported.size()));
             if (imported.empty())
-              state.lastError = "No folder selected or no valid mods found.";
+              state.lastError = launcherText("error.noFolderSelectedOrNoValidMods", "No folder selected or no valid mods found.");
             else
               state.lastError.clear();
             state.modListDirty = true;
           } else {
-            state.lastStatus = "Import unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.importUnavailable", "Import unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
 #endif
@@ -3491,7 +3819,7 @@ private:
       ImGui::Separator();
       String modSearch = String(state.modSearchBuffer).trim();
       size_t shownMods = 0;
-      ImGui::Text("Installed mods: %u", (unsigned)state.modEntries.size());
+      ImGui::Text("%s: %u", launcherText("modManager.installedModsLabel", "Installed mods").utf8Ptr(), (unsigned)state.modEntries.size());
       float modListHeight = std::max(180.0f, ImGui::GetContentRegionAvail().y - 90.0f);
       if (ImGui::BeginChild("ModManagerList", ImVec2(0.0f, modListHeight), true, ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
         for (auto const& mod : state.modEntries) {
@@ -3506,11 +3834,11 @@ private:
           ImGui::PushID(mod.path.utf8Ptr());
           ImGui::TextUnformatted(mod.displayName.utf8Ptr());
           sameLineIfNextFits(ImGui::CalcTextSize(mod.isDirectory ? "[folder]" : "[.pak]").x);
-          ImGui::TextDisabled("[%s]", mod.isDirectory ? "folder" : ".pak");
-          sameLineIfNextFits(imguiButtonWidth("Delete", ImVec2(90.0f, 0.0f)));
+          ImGui::TextDisabled("[%s]", mod.isDirectory ? launcherText("modManager.typeFolder", "folder").utf8Ptr() : ".pak");
+          sameLineIfNextFits(imguiButtonWidth(launcherText("common.delete", "Delete").utf8Ptr(), ImVec2(90.0f, 0.0f)));
           if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + 90.0f <= ImGui::GetWindowPos().x + ImGui::GetContentRegionMax().x)
             ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - 110.0f));
-          if (ImGui::Button("Delete", ImVec2(90.0f, 0.0f))) {
+          if (ImGui::Button(launcherText("common.delete", "Delete").utf8Ptr(), ImVec2(90.0f, 0.0f))) {
             state.pendingDeletePath = mod.path;
             state.pendingDeleteName = mod.displayName;
             state.pendingDeleteIsDirectory = mod.isDirectory;
@@ -3521,28 +3849,28 @@ private:
 
         if (shownMods == 0) {
           if (!modSearch.empty())
-            ImGui::TextDisabled("No mods match your search.");
+            ImGui::TextDisabled("%s", launcherText("modManager.noSearchMatches", "No mods match your search.").utf8Ptr());
           else
-            ImGui::TextDisabled("No mods are currently installed.");
+            ImGui::TextDisabled("%s", launcherText("modManager.noInstalledMods", "No mods are currently installed.").utf8Ptr());
         }
       }
       ImGui::EndChild();
       ImGui::EndChild();
 
       if (requestDeletePopup)
-        ImGui::OpenPopup("Delete Mod?");
+        ImGui::OpenPopup(launcherText("modManager.deletePopupTitle", "Delete Mod?").utf8Ptr());
 
-      if (ImGui::BeginPopupModal("Delete Mod?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::TextWrapped("Delete mod '%s'?", state.pendingDeleteName.utf8Ptr());
-        ImGui::TextWrapped("This removes it from the game's internal mods directory.");
-        if (ImGui::Button("Delete", ImVec2(140.0f, 0.0f))) {
+      if (ImGui::BeginPopupModal(launcherText("modManager.deletePopupTitle", "Delete Mod?").utf8Ptr(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("%s", launcherText("modManager.deleteConfirm", "Delete mod '{name}'?").replace("{name}", state.pendingDeleteName).utf8Ptr());
+        ImGui::TextWrapped("%s", launcherText("modManager.deleteWarning", "This removes it from the game's internal mods directory.").utf8Ptr());
+        if (ImGui::Button(launcherText("common.delete", "Delete").utf8Ptr(), ImVec2(140.0f, 0.0f))) {
           runLauncherAction("Delete mod", [&]() {
             if (!state.pendingDeletePath.empty()) {
               if (state.pendingDeleteIsDirectory)
                 File::removeDirectoryRecursive(state.pendingDeletePath);
               else
                 File::remove(state.pendingDeletePath);
-              state.lastStatus = strf("Deleted mod '{}'.", state.pendingDeleteName);
+              state.lastStatus = launcherText("modManager.deletedMod", "Deleted mod '{name}'.").replace("{name}", state.pendingDeleteName);
               state.lastError.clear();
               state.modListDirty = true;
             }
@@ -3552,8 +3880,8 @@ private:
           state.pendingDeleteIsDirectory = false;
           ImGui::CloseCurrentPopup();
         }
-        sameLineIfNextFits(imguiButtonWidth("Cancel", ImVec2(140.0f, 0.0f)));
-        if (ImGui::Button("Cancel", ImVec2(140.0f, 0.0f))) {
+        sameLineIfNextFits(imguiButtonWidth(launcherText("common.cancel", "Cancel").utf8Ptr(), ImVec2(140.0f, 0.0f)));
+        if (ImGui::Button(launcherText("common.cancel", "Cancel").utf8Ptr(), ImVec2(140.0f, 0.0f))) {
           state.pendingDeletePath.clear();
           state.pendingDeleteName.clear();
           state.pendingDeleteIsDirectory = false;
@@ -3564,63 +3892,63 @@ private:
     } else if (state.saveManagerOpen) {
       beginLauncherScrollArea("SaveManagerScroll", state);
 
-      ImGui::Text("Save Manager");
-      ImGui::TextWrapped("Open, import, and export player and universe save data.");
+      ImGui::TextUnformatted(launcherText("saveManager.title", "Save Manager").utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("saveManager.description", "Open, import, and export player and universe save data.").utf8Ptr());
       ImGui::Separator();
 
-      if (ImGui::Button("Back to Launcher"))
+      if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
         state.saveManagerOpen = false;
 
-      ImGui::TextWrapped("Save location: %s", m_storageRoot.utf8Ptr());
-      ImGui::TextWrapped("Exports include player and universe save data only. Assets and mods are not included.");
+      ImGui::TextWrapped("%s: %s", launcherText("saveManager.locationLabel", "Save location").utf8Ptr(), m_storageRoot.utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("saveManager.exportNote", "Exports include player and universe save data only. Assets and mods are not included.").utf8Ptr());
 
-      if (ImGui::Button("Open Save Folder")) {
+      if (ImGui::Button(launcherText("saveManager.openFolder", "Open Save Folder").utf8Ptr())) {
         runLauncherAction("Open save folder", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             if (svc->openSaveLocationInSystemBrowser()) {
-              state.lastStatus = "Save folder opened.";
+              state.lastStatus = launcherText("status.saveFolderOpened", "Save folder opened.");
               state.lastError.clear();
             } else {
-              state.lastStatus = "Open save folder unavailable.";
-              state.lastError = "Could not open the native file browser for the save folder.";
+              state.lastStatus = launcherText("status.openSaveFolderUnavailable", "Open save folder unavailable.");
+              state.lastError = launcherText("error.openSaveFolderFailed", "Could not open the native file browser for the save folder.");
             }
           } else {
-            state.lastStatus = "Open save folder unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.openSaveFolderUnavailable", "Open save folder unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
       }
 
-      if (ImGui::Button("Import Save Zip")) {
+      if (ImGui::Button(launcherText("saveManager.importZip", "Import Save Zip").utf8Ptr())) {
         runLauncherAction("Import save zip", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             if (svc->importSaveZip()) {
-              state.lastStatus = "Save zip import finished.";
+              state.lastStatus = launcherText("status.saveZipImportFinished", "Save zip import finished.");
               state.lastError.clear();
             } else {
-              state.lastStatus = "No save zip imported.";
-              state.lastError = "No .zip selected, invalid save archive, or import failed.";
+              state.lastStatus = launcherText("status.noSaveZipImported", "No save zip imported.");
+              state.lastError = launcherText("error.invalidSaveZipOrImportFailed", "No .zip selected, invalid save archive, or import failed.");
             }
           } else {
-            state.lastStatus = "Import unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.importUnavailable", "Import unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
       }
-      sameLineIfNextFits(imguiButtonWidth("Export Save Zip"));
-      if (ImGui::Button("Export Save Zip")) {
+      sameLineIfNextFits(imguiButtonWidth(launcherText("saveManager.exportZip", "Export Save Zip").utf8Ptr()));
+      if (ImGui::Button(launcherText("saveManager.exportZip", "Export Save Zip").utf8Ptr())) {
         runLauncherAction("Export save zip", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             if (svc->exportSaveZip()) {
-              state.lastStatus = "Save export opened.";
+              state.lastStatus = launcherText("status.saveExportOpened", "Save export opened.");
               state.lastError.clear();
             } else {
-              state.lastStatus = "Save export unavailable.";
-              state.lastError = "No save data found or the native share sheet could not be opened.";
+              state.lastStatus = launcherText("status.saveExportUnavailable", "Save export unavailable.");
+              state.lastError = launcherText("error.noSaveDataOrShareUnavailable", "No save data found or the native share sheet could not be opened.");
             }
           } else {
-            state.lastStatus = "Export unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.exportUnavailable", "Export unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
       }
@@ -3628,14 +3956,14 @@ private:
     } else {
       beginLauncherScrollArea("LauncherMainScroll", state);
 
-      ImGui::TextWrapped("Configure assets and controls before launching.");
+      ImGui::TextWrapped("%s", launcherText("launcher.configureHint", "Configure assets and controls before launching.").utf8Ptr());
       ImGui::Separator();
 
-      ImGui::Text("packed.pak: %s", state.packedPakPath.empty() ? "<not selected>" : state.packedPakPath.utf8Ptr());
+      ImGui::Text("%s: %s", launcherText("launcher.packedPakLabel", "packed.pak").utf8Ptr(), state.packedPakPath.empty() ? launcherText("launcher.notSelected", "<not selected>").utf8Ptr() : state.packedPakPath.utf8Ptr());
       renderLauncherBusyIndicator(state);
 
       ImGui::BeginDisabled(state.asyncActionRunning);
-      if (ImGui::Button("Pick packed.pak")) {
+      if (ImGui::Button(launcherText("launcher.pickPackedPak", "Pick packed.pak").utf8Ptr())) {
 #ifdef STAR_SYSTEM_IOS
         auto svc = m_platformServices->externalFileAccessService();
         runLauncherActionAsync("Import packed.pak", [svc]() {
@@ -3643,7 +3971,7 @@ private:
             auto picked = svc->pickPackedPak();
             if (picked) {
               return LauncherActionResult{
-                "Imported packed.pak",
+                launcherText("status.importedPackedPak", "Imported packed.pak"),
                 "",
                 false,
                 picked
@@ -3651,16 +3979,16 @@ private:
             }
 
             return LauncherActionResult{
-              "No file selected.",
-              "Native picker unavailable or canceled.",
+              launcherText("status.noFileSelected", "No file selected."),
+              launcherText("error.nativePickerUnavailableCanceled", "Native picker unavailable or canceled."),
               false,
               {}
             };
           }
 
           return LauncherActionResult{
-            "Native picker unavailable.",
-            "ExternalFileAccessService is unavailable on this platform build.",
+            launcherText("status.nativePickerUnavailable", "Native picker unavailable."),
+            launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build."),
             false,
             {}
           };
@@ -3671,15 +3999,15 @@ private:
             auto picked = svc->pickPackedPak();
             if (picked) {
               state.packedPakPath = *picked;
-              state.lastStatus = "Imported packed.pak";
+              state.lastStatus = launcherText("status.importedPackedPak", "Imported packed.pak");
               state.lastError.clear();
             } else {
-              state.lastStatus = "No file selected.";
-              state.lastError = "Native picker unavailable or canceled.";
+              state.lastStatus = launcherText("status.noFileSelected", "No file selected.");
+              state.lastError = launcherText("error.nativePickerUnavailableCanceled", "Native picker unavailable or canceled.");
             }
           } else {
-            state.lastStatus = "Native picker unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.nativePickerUnavailable", "Native picker unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
 #endif
@@ -3687,51 +4015,51 @@ private:
       ImGui::EndDisabled();
 
       ImGui::Separator();
-      ImGui::TextWrapped("Current mods directory: %s", modsPath.utf8Ptr());
-      if (ImGui::Button("Mod Manager")) {
+      ImGui::TextWrapped("%s: %s", launcherText("launcher.modsDirectoryLabel", "Current mods directory").utf8Ptr(), modsPath.utf8Ptr());
+      if (ImGui::Button(launcherText("launcher.modManager", "Mod Manager").utf8Ptr())) {
         state.modManagerOpen = true;
         state.modListDirty = true;
       }
-      sameLineIfNextFits(imguiButtonWidth("Save Manager"));
-      if (ImGui::Button("Save Manager"))
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.saveManager", "Save Manager").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.saveManager", "Save Manager").utf8Ptr()))
         state.saveManagerOpen = true;
-      sameLineIfNextFits(imguiButtonWidth("UI Settings"));
-      if (ImGui::Button("UI Settings"))
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.uiSettings", "UI Settings").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.uiSettings", "UI Settings").utf8Ptr()))
         state.uiSettingsOpen = true;
-      sameLineIfNextFits(imguiButtonWidth("Touch Controls"));
-      if (ImGui::Button("Touch Controls")) {
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.touchControls", "Touch Controls").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.touchControls", "Touch Controls").utf8Ptr())) {
         state.touchManagerOpen = true;
         state.selectedTouchElement = std::clamp(state.selectedTouchElement, 0, (int)state.touchElements.size() - 1);
       }
-      sameLineIfNextFits(imguiButtonWidth("Export Diagnostics"));
-      if (ImGui::Button("Export Diagnostics")) {
+      sameLineIfNextFits(imguiButtonWidth(launcherText("launcher.exportDiagnostics", "Export Diagnostics").utf8Ptr()));
+      if (ImGui::Button(launcherText("launcher.exportDiagnostics", "Export Diagnostics").utf8Ptr())) {
         runLauncherAction("Export diagnostics", [&]() {
           if (auto svc = m_platformServices->externalFileAccessService()) {
             if (svc->exportDiagnostics()) {
-              state.lastStatus = "Diagnostics export opened.";
+              state.lastStatus = launcherText("status.diagnosticsExportOpened", "Diagnostics export opened.");
               state.lastError.clear();
             } else {
-              state.lastStatus = "Diagnostics export unavailable.";
-              state.lastError = "Could not open the native diagnostics share sheet.";
+              state.lastStatus = launcherText("status.diagnosticsExportUnavailable", "Diagnostics export unavailable.");
+              state.lastError = launcherText("error.diagnosticsShareUnavailable", "Could not open the native diagnostics share sheet.");
             }
           } else {
-            state.lastStatus = "Diagnostics export unavailable.";
-            state.lastError = "ExternalFileAccessService is unavailable on this platform build.";
+            state.lastStatus = launcherText("status.diagnosticsExportUnavailable", "Diagnostics export unavailable.");
+            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
           }
         });
       }
 
       ImGui::Separator();
-      ImGui::Text("Touch Controls: %s", state.touchConfig.enabled ? "enabled" : "disabled");
+      ImGui::Text("%s: %s", launcherText("launcher.touchControlsStatusLabel", "Touch Controls").utf8Ptr(), state.touchConfig.enabled ? launcherText("common.enabled", "enabled").utf8Ptr() : launcherText("common.disabled", "disabled").utf8Ptr());
 
       state.canLaunch = File::isFile(state.packedPakPath);
       if (!state.canLaunch)
-        ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "Launch is disabled until packed.pak is imported.");
+        ImGui::TextColored(ImVec4(1, 0.6f, 0.4f, 1), "%s", launcherText("launcher.launchDisabledHint", "Launch is disabled until packed.pak is imported.").utf8Ptr());
 
       bool launchDisabled = !state.canLaunch || state.asyncActionRunning;
       if (launchDisabled)
         ImGui::BeginDisabled();
-      launchPressed = ImGui::Button("Launch");
+      launchPressed = ImGui::Button(launcherText("launcher.launch", "Launch").utf8Ptr());
       if (launchDisabled)
         ImGui::EndDisabled();
 
@@ -3739,7 +4067,7 @@ private:
     }
 
     if (!state.lastStatus.empty())
-      ImGui::Text("Status: %s", state.lastStatus.utf8Ptr());
+      ImGui::Text("%s: %s", launcherText("common.status", "Status").utf8Ptr(), state.lastStatus.utf8Ptr());
     if (!state.lastError.empty())
       ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", state.lastError.utf8Ptr());
 
@@ -3751,6 +4079,7 @@ private:
     syncImGuiTextInputState();
 
     ImGui::Render();
+    m_launcherImGuiClickConsumed = ImGui::IsMouseReleased(ImGuiMouseButton_Left);
 #ifdef STAR_SYSTEM_IOS
     glBindFramebuffer(GL_FRAMEBUFFER, m_renderer->screenFramebuffer());
 #endif
@@ -3773,6 +4102,7 @@ private:
       {"packedPakPath", state.packedPakPath},
       {"launcherUi", JsonObject{
         {"scale", state.uiConfig.scale},
+        {"locale", state.locale},
         {"accentColor", JsonArray{
           state.uiConfig.accentColor[0],
           state.uiConfig.accentColor[1],
@@ -3799,7 +4129,7 @@ private:
 
   bool prepareBootConfig(LauncherState const& state, String& errorMessage) {
     if (!File::isFile(state.packedPakPath)) {
-      errorMessage = "Selected packed.pak was not found. Please re-select it.";
+      errorMessage = launcherText("runtime.missingPackedPak", "Selected packed.pak was not found. Please re-select it.");
       return false;
     }
 
@@ -3811,10 +4141,8 @@ private:
     String bundledStorageRoot = File::relativeTo(m_storageRoot, "bundled_assets");
     if (auto synced = AndroidFileAccessBridge::syncBundledAssets(bundledStorageRoot)) {
       bundledAssetsRoot = *synced;
-      androidLogInfo("prepareBootConfig: bundled assets synced to %s", bundledAssetsRoot.utf8Ptr());
     } else {
-      androidLogInfo("prepareBootConfig: bundled assets sync failed");
-      errorMessage = "Failed to load bundled OpenStarbound assets from the app package.";
+      errorMessage = launcherText("runtime.failedBundledAssetsApp", "Failed to load bundled OpenStarbound assets from the app package.");
       return false;
     }
 #elif STAR_SYSTEM_IOS
@@ -3822,7 +4150,7 @@ private:
     if (auto synced = IosFileAccessBridge::syncBundledAssets(bundledStorageRoot)) {
       bundledAssetsRoot = *synced;
     } else {
-      errorMessage = "Failed to load bundled OpenStarbound assets from the iOS app package.";
+      errorMessage = launcherText("runtime.failedBundledAssetsIos", "Failed to load bundled OpenStarbound assets from the iOS app package.");
       return false;
     }
 #else
@@ -3885,22 +4213,22 @@ private:
       auto startupSucceeded = make_shared<std::atomic<bool>>(false);
       auto startupError = make_shared<String>();
       auto startupErrorMutex = make_shared<Mutex>();
-      auto startupStatus = make_shared<String>("Preparing startup...");
+      auto startupStatus = make_shared<String>(launcherText("startup.preparing", "Preparing startup..."));
       auto startupStatusMutex = make_shared<Mutex>();
 
       auto startupThread = Thread::invoke("Mobile::ClientStartup", [this, startupDone, startupSucceeded, startupError, startupErrorMutex, startupStatus, startupStatusMutex]() {
           try {
             {
               MutexLocker locker(*startupStatusMutex);
-              *startupStatus = "Loading game assets and configuration...";
+              *startupStatus = launcherText("startup.loadingAssets", "Loading game assets and configuration...");
             }
-            setMobileStartupStatus("Loading game assets and configuration...");
+            setMobileStartupStatus(launcherText("startup.loadingAssets", "Loading game assets and configuration..."));
             androidLogInfo("startApplication(worker): application->startup begin");
             m_application->startup(m_runtimeArgs);
             androidLogInfo("startApplication(worker): application->startup done");
             {
               MutexLocker locker(*startupStatusMutex);
-              *startupStatus = "Startup completed. Initializing game systems...";
+              *startupStatus = launcherText("startup.initSystems", "Startup completed. Initializing game systems...");
             }
             startupSucceeded->store(true, std::memory_order_release);
           } catch (std::exception const& e) {
@@ -3908,7 +4236,7 @@ private:
             *startupError = strf("{}", outputException(e, true));
           } catch (...) {
             MutexLocker locker(*startupErrorMutex);
-            *startupError = "Unknown startup failure";
+            *startupError = launcherText("startup.failedUnknown", "Unknown startup failure");
           }
 
           startupDone->store(true, std::memory_order_release);
@@ -3941,7 +4269,7 @@ private:
       startupThread.finish();
 
       if (m_quitRequested) {
-        errorMessage = "Launch canceled.";
+        errorMessage = launcherText("startup.canceled", "Launch canceled.");
         return false;
       }
 
@@ -3959,13 +4287,13 @@ private:
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: applicationInit");
       m_application->applicationInit(m_appController);
-      setMobileStartupStatus("Initializing renderer...");
+      setMobileStartupStatus(launcherText("startup.initRenderer", "Initializing renderer..."));
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: renderInit");
       m_application->renderInit(m_renderer);
       setMobileStartupStatus("Renderer initialized...");
       renderStartupScreen(getMobileStartupStatus());
-      setMobileStartupStatus("Initializing touch controls...");
+      setMobileStartupStatus(launcherText("startup.initTouch", "Initializing touch controls..."));
       renderStartupScreen(getMobileStartupStatus());
       androidLogInfo("startApplication: create touch adapter");
       m_touchAdapter = make_unique<MobileTouchInputAdapter>(&m_windowSize, &m_renderCanvasSize, &m_displayScale, &m_safeArea);
@@ -3993,7 +4321,7 @@ private:
       if (m_softQuitRequested || m_quitRequested) {
         m_softQuitRequested = false;
         m_quitRequested = false;
-        errorMessage = "Game initialization requested quit.";
+        errorMessage = launcherText("runtime.initRequestedQuit", "Game initialization requested quit.");
         androidLogInfo("startApplication aborted: initialization requested quit");
         return false;
       }
@@ -4005,7 +4333,7 @@ private:
       Logger::error("Failed starting mobile application: {}", errorMessage);
       return false;
     } catch (...) {
-      errorMessage = "Unknown startup failure";
+      errorMessage = launcherText("startup.failedUnknown", "Unknown startup failure");
       Logger::error("Failed starting mobile application: {}", errorMessage);
       return false;
     }
@@ -4021,13 +4349,13 @@ private:
     ImGui::SetNextWindowPos(ImVec2(margin, margin), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(displaySize.x - margin * 2.0f, displaySize.y - margin * 2.0f), ImGuiCond_Always);
     ImGui::Begin(
-      "OpenStarbound Mobile Loader",
+      launcherText("launcher.title", "OpenStarbound Mobile Loader").utf8Ptr(),
       nullptr,
       ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar
     );
     ImGui::TextWrapped("%s", status.utf8Ptr());
     ImGui::Separator();
-    ImGui::TextWrapped("Please wait. Assets and configuration are loading.");
+    ImGui::TextWrapped("%s", launcherText("launcher.loadingHint", "Please wait. Assets and configuration are loading.").utf8Ptr());
     ImGui::End();
 
     ImGui::Render();
@@ -4403,15 +4731,14 @@ private:
     ImVec2 pos = launcherTouchPosition(event.tfinger.x, event.tfinger.y);
     uint64_t finger = event.tfinger.fingerID;
 
-    io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
-    io.AddMousePosEvent(pos.x, pos.y);
-
     if (event.type == SDL_EVENT_FINGER_DOWN) {
       if (!m_launcherTouchActive) {
         m_launcherTouchActive = true;
         m_launcherTouchFinger = finger;
         m_launcherTouchLastPos = pos;
         m_launcherTouchDragDistance = 0.0f;
+        io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+        io.AddMousePosEvent(pos.x, pos.y);
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
       }
       return true;
@@ -4421,6 +4748,9 @@ private:
       return true;
 
     if (event.type == SDL_EVENT_FINGER_MOTION) {
+      io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+      io.AddMousePosEvent(pos.x, pos.y);
+
       float dx = pos.x - m_launcherTouchLastPos.x;
       float dy = pos.y - m_launcherTouchLastPos.y;
       m_launcherTouchLastPos = pos;
@@ -4432,10 +4762,17 @@ private:
       return true;
     }
 
-    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
-    m_launcherTouchActive = false;
-    m_launcherTouchFinger = 0;
-    m_launcherTouchDragDistance = 0.0f;
+    if (event.type == SDL_EVENT_FINGER_UP || event.type == SDL_EVENT_FINGER_CANCELED) {
+      io.AddMouseSourceEvent(ImGuiMouseSource_TouchScreen);
+      io.AddMousePosEvent(pos.x, pos.y);
+      if (!m_launcherImGuiClickConsumed)
+        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+      m_launcherTouchActive = false;
+      m_launcherTouchFinger = 0;
+      m_launcherTouchDragDistance = 0.0f;
+      return true;
+    }
+
     return true;
   }
 
@@ -4635,8 +4972,9 @@ private:
     float shortSide = (float)std::min(canvas[0], canvas[1]) / pixelScale;
     float baseScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
 #else
-    float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]);
-    float baseScale = std::clamp(shortSide / 500.0f, 1.35f, 2.2f);
+    float pixelScale = std::max(1.0f, m_displayScale > 0.0f ? m_displayScale : 1.5f);
+    float shortSide = (float)std::min(m_windowSize[0], m_windowSize[1]) / pixelScale;
+    float baseScale = std::clamp(shortSide / 900.0f, 0.85f, 1.15f);
 #endif
     io.FontGlobalScale = std::clamp(baseScale * std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f), 0.65f, 3.0f);
   }
@@ -4731,6 +5069,12 @@ private:
   String m_storageRoot;
   String m_legacyStorageRoot;
   String m_bootConfigPath;
+  String m_launcherLocale = DefaultLauncherLocale;
+  String m_launcherLangDirectory;
+  String m_launcherFontPath;
+  StringMap<String> m_launcherTranslations;
+  ByteArray m_launcherFontData;
+  std::vector<ByteArray> m_launcherFallbackFontData;
   LauncherUiConfig m_launcherUiConfig;
 
   TickRateApproacher m_updateTicker{60.0f, 1.0f};
@@ -4749,6 +5093,7 @@ private:
   uint64_t m_launcherTouchFinger = 0;
   ImVec2 m_launcherTouchLastPos = ImVec2(0.0f, 0.0f);
   float m_launcherTouchDragDistance = 0.0f;
+  bool m_launcherImGuiClickConsumed = false;
 };
 
 } // namespace

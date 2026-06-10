@@ -16,7 +16,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Debug;
+import android.os.LocaleList;
 import android.os.Looper;
+import android.util.Log;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -52,6 +54,7 @@ import java.util.zip.ZipInputStream;
 import java.util.zip.ZipOutputStream;
 
 public final class MainActivity extends SDLActivity {
+    private static final String TAG = "OpenStarbound";
     private static final int REQUEST_PICK_PAK = 0x5001;
     private static final int REQUEST_PICK_MOD_PAK = 0x5002;
     private static final int REQUEST_PICK_MOD_FOLDER = 0x5003;
@@ -1439,80 +1442,150 @@ public final class MainActivity extends SDLActivity {
         return true;
     }
 
+    public static String getPreferredLocales() {
+        MainActivity activity = instance();
+        if (activity == null) {
+            String fallback = java.util.Locale.getDefault().toLanguageTag();
+            Log.i(TAG, "getPreferredLocales: no activity, fallback=" + fallback);
+            return fallback;
+        }
+
+        try {
+            Configuration configuration = activity.getResources().getConfiguration();
+            if (Build.VERSION.SDK_INT >= 24) {
+                LocaleList locales = configuration.getLocales();
+                if (locales != null && !locales.isEmpty()) {
+                    StringBuilder out = new StringBuilder();
+                    for (int i = 0; i < locales.size(); ++i) {
+                        java.util.Locale locale = locales.get(i);
+                        if (locale == null) {
+                            continue;
+                        }
+                        if (out.length() > 0) {
+                            out.append(',');
+                        }
+                        out.append(locale.toLanguageTag());
+                    }
+                    if (out.length() > 0) {
+                        String result = out.toString();
+                        Log.i(TAG, "getPreferredLocales: " + result);
+                        return result;
+                    }
+                }
+            }
+
+            java.util.Locale locale = configuration.locale;
+            if (locale != null) {
+                String result = locale.toLanguageTag();
+                Log.i(TAG, "getPreferredLocales legacy: " + result);
+                return result;
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "getPreferredLocales failed", error);
+        }
+
+        String fallback = java.util.Locale.getDefault().toLanguageTag();
+        Log.i(TAG, "getPreferredLocales fallback: " + fallback);
+        return fallback;
+    }
+
     public static String syncBundledAssets(String targetRootDir) {
         MainActivity activity = instance();
         if (activity == null || targetRootDir == null || targetRootDir.isEmpty()) {
+            Log.w(TAG, "syncBundledAssets: invalid activity or targetRootDir");
             return null;
         }
 
         try {
             File targetRoot = new File(targetRootDir);
             if (!targetRoot.exists() && !targetRoot.mkdirs()) {
+                Log.w(TAG, "syncBundledAssets: failed to create targetRoot=" + targetRootDir);
                 return null;
             }
 
-            if (!copyAssetTreeIfMissing(activity, "opensb", new File(targetRoot, "opensb"))) {
+            boolean opensbOk = copyAssetTreeIfMissing(activity, "opensb", new File(targetRoot, "opensb"));
+            boolean langOk = copyAssetTreeIfMissing(activity, "lang", new File(targetRoot, "lang"));
+            boolean fontOk = copyAssetTreeIfMissing(activity, "opensb/hobo.ttf", new File(targetRoot, "hobo.ttf"));
+            Log.i(TAG, "syncBundledAssets: root=" + targetRoot.getAbsolutePath()
+                + " opensbOk=" + opensbOk
+                + " langOk=" + langOk
+                + " fontOk=" + fontOk
+                + " langExists=" + new File(targetRoot, "lang/zh_CN.lang").isFile()
+                + " fontExists=" + new File(targetRoot, "hobo.ttf").isFile());
+            if (!opensbOk) {
                 return null;
             }
             return targetRoot.getAbsolutePath();
-        } catch (Throwable ignored) {
+        } catch (Throwable error) {
+            Log.w(TAG, "syncBundledAssets failed", error);
             return null;
         }
     }
 
     private static boolean copyAssetTreeIfMissing(MainActivity activity, String assetPath, File dst) {
         try {
-            String[] children = activity.getAssets().list(assetPath);
-            if (children == null) {
-                return false;
+            // Detect file vs directory by attempting to open the asset.
+            // getAssets().open() throws FileNotFoundException for directories,
+            // but returns a valid stream for files — including leaf assets like
+            // "hobo.ttf" or "en_US.lang" that live directly under asset dirs.
+            // We must NOT rely on list() return value: it throws for files.
+            try (InputStream test = activity.getAssets().open(assetPath)) {
+                test.close();
             }
-
-            if (children.length == 0) {
-                // File node
-                if (dst.exists() && dst.isFile()) {
-                    return true;
-                }
-                File parent = dst.getParentFile();
-                if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                    return false;
-                }
-
-                File tmp = new File(dst.getAbsolutePath() + ".tmp");
-                try (InputStream in = activity.getAssets().open(assetPath);
-                     FileOutputStream out = new FileOutputStream(tmp, false)) {
-                    byte[] buffer = new byte[64 * 1024];
-                    int read;
-                    while ((read = in.read(buffer)) > 0) {
-                        out.write(buffer, 0, read);
-                    }
-                    out.flush();
-                }
-
-                if (dst.exists() && !dst.delete()) {
-                    tmp.delete();
-                    return false;
-                }
-                if (!tmp.renameTo(dst)) {
-                    tmp.delete();
-                    return false;
-                }
+            // It's a file. Copy it if missing.
+            if (dst.exists() && dst.isFile()) {
                 return true;
             }
-
-            // Directory node
-            if (!dst.exists() && !dst.mkdirs()) {
+            if (dst.isDirectory()) {
+                deleteRecursively(dst);
+            }
+            File parent = dst.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                Log.w(TAG, "copyAssetTreeIfMissing: failed to create parent for file: " + assetPath);
                 return false;
             }
-
-            for (String child : children) {
-                String childAssetPath = assetPath + "/" + child;
-                File childDst = new File(dst, child);
-                if (!copyAssetTreeIfMissing(activity, childAssetPath, childDst)) {
+            File tmp = new File(dst.getAbsolutePath() + ".tmp");
+            try (InputStream in = activity.getAssets().open(assetPath);
+                 FileOutputStream out = new FileOutputStream(tmp, false)) {
+                byte[] buffer = new byte[64 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    out.write(buffer, 0, read);
+                }
+                out.flush();
+            }
+            if (dst.exists() && !dst.delete()) {
+                tmp.delete();
+                return false;
+            }
+            if (!tmp.renameTo(dst)) {
+                tmp.delete();
+                return false;
+            }
+            Log.i(TAG, "copyAssetTreeIfMissing: copied file " + assetPath + " -> " + dst.getAbsolutePath());
+            return true;
+        } catch (java.io.FileNotFoundException fnfe) {
+            // Not a file — must be a directory (or invalid path, which the caller won't send).
+            try {
+                String[] children = activity.getAssets().list(assetPath);
+                if (!dst.exists() && !dst.mkdirs()) {
                     return false;
                 }
+                if (children == null) {
+                    return true;
+                }
+                for (String child : children) {
+                    if (!copyAssetTreeIfMissing(activity, assetPath + "/" + child, new File(dst, child))) {
+                        return false;
+                    }
+                }
+                return true;
+            } catch (java.io.IOException ioe) {
+                Log.w(TAG, "copyAssetTreeIfMissing: list failed for directory: " + assetPath, ioe);
+                return false;
             }
-            return true;
-        } catch (Throwable ignored) {
+        } catch (Throwable error) {
+            Log.w(TAG, "copyAssetTreeIfMissing failed: assetPath=" + assetPath + " dst=" + dst.getAbsolutePath(), error);
             return false;
         }
     }
