@@ -88,6 +88,8 @@ enum class GamepadGlyphFamily {
   SteamDeck
 };
 
+static int64_t const LauncherQuickStartHoldMs = 1000;
+
 struct LauncherState {
   ~LauncherState() {
     if (asyncActionThread.joinable())
@@ -1396,6 +1398,44 @@ private:
     return false;
   }
 
+  void renderLauncherQuickStartPrompt(float progress, bool enabled) {
+    GamepadGlyphFamily family = activeGamepadGlyphFamily();
+    float scale = std::clamp(m_launcherUiConfig.scale, 0.75f, 1.75f);
+    ImVec2 glyphSize(24.0f * scale, 24.0f * scale);
+
+    if (!enabled)
+      ImGui::BeginDisabled();
+
+    ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
+    ImGui::TextUnformatted(launcherText("launcher.quickStartHoldPrefix", "Hold").utf8Ptr());
+    ImGui::SameLine();
+    String glyphPath = gamepadGlyphAssetPath(ControllerButton::A, family);
+    if (!glyphPath.empty()) {
+      if (auto texture = launcherTexture(glyphPath)) {
+        float lineHeight = ImGui::GetTextLineHeight();
+        ImVec2 cursor = ImGui::GetCursorScreenPos();
+        ImVec2 imageMin(cursor.x, cursor.y + (lineHeight - glyphSize.y) * 0.5f);
+        ImGui::GetWindowDrawList()->AddImage(imguiTextureId(*texture), imageMin, ImVec2(imageMin.x + glyphSize.x, imageMin.y + glyphSize.y), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+        ImGui::Dummy(ImVec2(glyphSize.x, lineHeight));
+      } else {
+        ImGui::TextUnformatted(gamepadBindingDisplayLabel({ControllerButton::A, "A", true, noneAction(), MobileTouchPressMode::Hold}).utf8Ptr());
+      }
+    } else {
+      ImGui::TextUnformatted(gamepadBindingDisplayLabel({ControllerButton::A, "A", true, noneAction(), MobileTouchPressMode::Hold}).utf8Ptr());
+    }
+    ImGui::SameLine();
+    ImGui::TextUnformatted(launcherText("launcher.quickStartHoldSuffix", "for 1 second to launch").utf8Ptr());
+
+    if (m_launcherQuickStartButtonHeld) {
+      ImGui::PushStyleColor(ImGuiCol_PlotHistogram, accent);
+      ImGui::ProgressBar(std::clamp(progress, 0.0f, 1.0f), ImVec2(std::min(280.0f * scale, ImGui::GetContentRegionAvail().x), 0.0f), "");
+      ImGui::PopStyleColor();
+    }
+
+    if (!enabled)
+      ImGui::EndDisabled();
+  }
+
   Maybe<ImVec2> gamepadDiagramAnchor(ControllerButton button, GamepadGlyphFamily family) const {
     if (family == GamepadGlyphFamily::Playstation) {
       switch (button) {
@@ -2008,6 +2048,7 @@ private:
       File::makeDirectoryRecursive(modsPath);
 
     bool launchPressed = false;
+    bool mainLauncherOpen = !state.uiSettingsOpen && !state.touchManagerOpen && !state.modManagerOpen && !state.saveManagerOpen;
 
     if (state.uiSettingsOpen) {
       renderLauncherUiSettings(state);
@@ -2415,8 +2456,20 @@ private:
       if (launchDisabled)
         ImGui::EndDisabled();
 
+      bool quickStartAvailable = !m_activeGamepadName.empty();
+      bool quickStartEnabled = quickStartAvailable && !launchDisabled;
+      if (quickStartAvailable) {
+        int64_t heldMs = m_launcherQuickStartButtonHeld ? Time::monotonicMilliseconds() - m_launcherQuickStartStartMs : 0;
+        renderLauncherQuickStartPrompt((float)heldMs / (float)LauncherQuickStartHoldMs, quickStartEnabled);
+        if (quickStartEnabled && heldMs >= LauncherQuickStartHoldMs)
+          launchPressed = true;
+      }
+
       ImGui::EndChild();
     }
+
+    if (!mainLauncherOpen || state.asyncActionRunning || !state.canLaunch || m_activeGamepadName.empty())
+      resetLauncherQuickStart();
 
     if (!state.lastStatus.empty())
       ImGui::Text("%s: %s", launcherText("common.status", "Status").utf8Ptr(), state.lastStatus.utf8Ptr());
@@ -2443,6 +2496,7 @@ private:
 
     if (launchPressed) {
       androidLogInfo("Launch pressed");
+      resetLauncherQuickStart();
       persistLauncherState(state);
     }
 
@@ -3159,6 +3213,11 @@ private:
     return true;
   }
 
+  void resetLauncherQuickStart() {
+    m_launcherQuickStartButtonHeld = false;
+    m_launcherQuickStartStartMs = 0;
+  }
+
   void processWindowEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
@@ -3183,6 +3242,14 @@ private:
         openGamepad(event.gdevice.which);
       } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
         closeGamepad(event.gdevice.which);
+      } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN) {
+        if (controllerButtonFromSdlControllerButton(event.gbutton.button) == ControllerButton::A && !m_launcherQuickStartButtonHeld) {
+          m_launcherQuickStartButtonHeld = true;
+          m_launcherQuickStartStartMs = Time::monotonicMilliseconds();
+        }
+      } else if (event.type == SDL_EVENT_GAMEPAD_BUTTON_UP) {
+        if (controllerButtonFromSdlControllerButton(event.gbutton.button) == ControllerButton::A)
+          resetLauncherQuickStart();
       }
     }
 
@@ -3214,6 +3281,7 @@ private:
     refreshActiveGamepadInfo();
     if (m_gamepadAdapter)
       m_gamepadAdapter->cancelAll();
+    resetLauncherQuickStart();
   }
 
   void refreshActiveGamepadInfo() {
@@ -3538,6 +3606,8 @@ private:
   ImVec2 m_launcherTouchLastPos = ImVec2(0.0f, 0.0f);
   float m_launcherTouchDragDistance = 0.0f;
   bool m_launcherImGuiClickConsumed = false;
+  bool m_launcherQuickStartButtonHeld = false;
+  int64_t m_launcherQuickStartStartMs = 0;
 };
 
 
