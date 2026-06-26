@@ -4,6 +4,25 @@
 
 namespace Star {
 
+namespace {
+  // Renders a node's baked parameters for diagnostics, so behavior runtime
+  // errors make it obvious whether a parameter failed to resolve (e.g. an
+  // unresolved tree-parameter tag baking to null, which surfaces in Lua as a
+  // nil argument).
+  String describeNodeParameters(StringMap<NodeParameter> const& parameters) {
+    StringList parts;
+    for (auto const& p : parameters) {
+      String value;
+      if (auto key = p.second.second.maybe<String>())
+        value = strf("board:{}", *key);
+      else
+        value = p.second.second.get<Json>().repr();
+      parts.append(strf("{}({})={}", p.first, NodeParameterTypeNames.getRight(p.second.first), value));
+    }
+    return parts.join(", ");
+  }
+}
+
 // node parameter types supported by the blackboard
 List<NodeParameterType> BlackboardTypes = {
   NodeParameterType::Json,
@@ -216,7 +235,13 @@ NodeStatus BehaviorState::runAction(ActionNode const& node, NodeState& state) {
     try {
       result = thread.resume<ActionReturn>(parameters, blackboardPtr(), id, m_lastDt).value(ActionReturn(NodeStatus::Invalid, LuaNil));
     } catch (LuaException const& e) {
-      throw StarException(strf("Lua Exception caught running action node {} in behavior {}: {}", node.name, m_tree->name, outputException(e, false)));
+      String resolved;
+      try {
+        resolved = m_luaContext.engine().luaTo<Json>(LuaValue(parameters)).repr();
+      } catch (...) {
+        resolved = "<unconvertible>";
+      }
+      throw StarException(strf("Lua Exception caught running action node {} in behavior {} (baked: [{}], resolved: {}): {}", node.name, m_tree->name, describeNodeParameters(node.parameters), resolved, outputException(e, false)));
     }
 
     auto status = get<0>(result);
@@ -228,7 +253,7 @@ NodeStatus BehaviorState::runAction(ActionNode const& node, NodeState& state) {
     try {
       result = thread.resume<ActionReturn>(m_lastDt).value(ActionReturn(NodeStatus::Invalid, LuaNil));
     } catch (LuaException const& e) {
-      throw StarException(strf("Lua Exception caught resuming action node {} in behavior {}: {}", node.name, m_tree->name, outputException(e, false)));
+      throw StarException(strf("Lua Exception caught resuming action node {} in behavior {} (parameters: [{}]): {}", node.name, m_tree->name, describeNodeParameters(node.parameters), outputException(e, false)));
     }
 
     auto status = get<0>(result);

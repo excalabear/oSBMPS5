@@ -9,6 +9,16 @@ if(PORT MATCHES "discord-")
     set(VCPKG_LIBRARY_LINKAGE dynamic)
 endif()
 
+if(PORT MATCHES "libsystemd")
+  set(VCPKG_C_FLAGS "-Wno-error=incompatible-pointer-types-discards-qualifiers")
+  set(VCPKG_CXX_FLAGS "-Wno-error=incompatible-pointer-types-discards-qualifiers")
+endif()
+
+if(PORT MATCHES "jemalloc")
+  set(VCPKG_C_FLAGS "-DJEMALLOC_VCPKG_COMPAT=1")
+  set(VCPKG_CXX_FLAGS "-include ${CMAKE_CURRENT_LIST_DIR}/jemalloc_bad_alloc_compat.hpp")
+endif()
+
 if(PORT MATCHES "opus")
   string(CONCAT VCPKG_CMAKE_CONFIGURE_OPTIONS
     "-DOPUS_INSTALL_PKG_CONFIG_MODULE=OFF"

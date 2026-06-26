@@ -220,6 +220,11 @@ private:
   ChatPtr m_chat;
   ClientCommandProcessorPtr m_clientCommandProcessor;
   RadioMessagePopupPtr m_radioMessagePopup;
+  // Tracks time since the last radio-message interrupt request so that a
+  // continuous (per-frame) stream of requests is treated as a single deliberate
+  // interrupt rather than repeatedly dismissing every message. Large initial
+  // value so the first genuine interrupt is honored immediately.
+  float m_timeSinceRadioInterruptRequest = 1000.0f;
   WirePanePtr m_wireInterface;
 
   ActionBarPtr m_actionBar;

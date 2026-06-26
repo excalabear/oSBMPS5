@@ -667,10 +667,23 @@ void MainInterface::update(float dt) {
   auto chatHeight = (m_chat->active() && m_chat->visible() > 0.1) ? m_chat->size()[1] : 0;
   m_radioMessagePopup->setChatHeight(chatHeight);
   if (!m_cinematicOverlay || m_cinematicOverlay->completed()) {
-    if (m_client->mainPlayer()->interruptRadioMessage())
-      m_radioMessagePopup->interrupt();
+    // A radio interrupt is meant to be a deliberate, one-shot dismissal. Some
+    // input paths (notably gamepad input feeding scripts that request an
+    // interrupt) can request it every single frame, which would dismiss every
+    // message the instant it appears. Debounce so that only the first request
+    // after a quiet gap is honored; a continuous stream is treated as one.
+    m_timeSinceRadioInterruptRequest += dt;
+    if (m_client->mainPlayer()->interruptRadioMessage()) {
+      constexpr float RadioInterruptDebounceTime = 0.5f;
+      if (m_timeSinceRadioInterruptRequest >= RadioInterruptDebounceTime) {
+        Logger::info("RadioPopup: interrupt honored ({}s since previous request)", m_timeSinceRadioInterruptRequest);
+        m_radioMessagePopup->interrupt();
+      }
+      m_timeSinceRadioInterruptRequest = 0.0f;
+    }
     if (!m_radioMessagePopup->messageActive()) {
       if (auto radioMessage = m_client->mainPlayer()->pullPendingRadioMessage()) {
+        Logger::info("RadioPopup: pulled pending message '{}' (popup idle)", radioMessage->messageId);
         m_radioMessagePopup->setMessage(*radioMessage);
         m_paneManager.displayRegisteredPane(MainInterfacePanes::RadioMessagePopup);
         ChatReceivedMessage message = {

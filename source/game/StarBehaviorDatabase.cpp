@@ -10,11 +10,15 @@ namespace Star {
 
 namespace {
   constexpr size_t BehaviorBuildDepthLimit = 2048;
-#if STAR_PLATFORM_MOBILE
-  constexpr size_t BehaviorBuildNodeLimit = 250000;
-#else
+  // Guards against pathologically/recursively expanding trees blowing up
+  // memory. This is only a last-resort sanity ceiling; genuine allocation
+  // failures are still caught as std::bad_alloc in loadTree(). Mobile uses the
+  // same ceiling as desktop: the module sub-tree + cache representation is more
+  // memory-efficient than the pre-refactor inline expansion, so any tree that
+  // previously built (inlined) on a device will build here too. A lower mobile
+  // ceiling was rejecting large modded behavior trees (e.g. FU/Arcane) that
+  // build fine, breaking NPC spawning and conversation behaviors.
   constexpr size_t BehaviorBuildNodeLimit = 1000000;
-#endif
 
   Json behaviorParameterValueToJson(NodeParameterValue const& value) {
     if (auto key = value.maybe<String>())
@@ -346,6 +350,15 @@ BehaviorNodeConstPtr BehaviorDatabase::behaviorNode(Json const& json, StringMap<
       auto cacheKey = behaviorModuleCacheKey(name, moduleParameters);
       if (auto module = context.moduleCache.maybe(cacheKey)) {
         ++context.moduleCacheHits;
+        // Modules execute as sub-trees, but their scripts and functions must
+        // still be propagated to the owning tree so that the master
+        // BehaviorState requires every script and resolves every function up
+        // front when the behavior is created (e.g. on NPC spawn). Otherwise
+        // module script side-effects (message handlers, converse/dialogue
+        // setup, init hooks) would be deferred until the module node first
+        // runs, causing skipped dialogue and mis-initialized entities.
+        tree.scripts.addAll((*module)->scripts);
+        tree.functions.addAll((*module)->functions);
         return make_shared<BehaviorNode>(*module);
       }
 
@@ -358,6 +371,12 @@ BehaviorNodeConstPtr BehaviorDatabase::behaviorNode(Json const& json, StringMap<
       context.moduleStack.takeLast();
 
       context.moduleCache.set(cacheKey, module);
+
+      // Propagate the (transitively collected) scripts and functions of the
+      // module up into the owning tree so they are loaded eagerly with the
+      // master BehaviorState, matching pre-module-refactor behavior.
+      tree.scripts.addAll(module->scripts);
+      tree.functions.addAll(module->functions);
 
       return make_shared<BehaviorNode>(module);
   }

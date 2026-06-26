@@ -83,6 +83,9 @@ bool RadioMessagePopup::messageActive() {
 }
 
 void RadioMessagePopup::setMessage(RadioMessage message) {
+  Logger::info("RadioPopup: setMessage id='{}' important={} type={} persistTime={} textSpeed={} portraitSpeed={} textLen={}",
+      message.messageId, message.important, (int)message.type, message.persistTime, message.textSpeed,
+      message.portraitSpeed, Text::stripEscapeCodes(message.text).length());
   m_message = message;
 
   if (!message.chatterSound.empty() && message.textSpeed > 0) {
@@ -124,6 +127,7 @@ void RadioMessagePopup::nextPopupStage() {
 }
 
 void RadioMessagePopup::enterStage(PopupStage newStage) {
+  Logger::info("RadioPopup: enterStage {} (msg '{}', stageTimer={})", (int)newStage, m_message.messageId, m_stageTimer.time);
   m_popupStage = newStage;
   if (m_popupStage == PopupStage::Hidden) {
     m_portraitImage->hide();
