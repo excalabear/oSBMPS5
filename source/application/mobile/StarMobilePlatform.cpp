@@ -2246,7 +2246,7 @@ private:
       beginLauncherScrollArea("SaveManagerScroll", state);
 
       ImGui::TextUnformatted(launcherText("saveManager.title", "Save Manager").utf8Ptr());
-      ImGui::TextWrapped("%s", launcherText("saveManager.description", "Open, import, and export player and universe save data.").utf8Ptr());
+      ImGui::TextWrapped("%s", launcherText("saveManager.description", "Copy, import, and export player and universe save data.").utf8Ptr());
       ImGui::Separator();
 
       if (ImGui::Button(launcherText("common.backToLauncher", "Back to Launcher").utf8Ptr()))
@@ -2255,19 +2255,14 @@ private:
       ImGui::TextWrapped("%s: %s", launcherText("saveManager.locationLabel", "Save location").utf8Ptr(), m_storageRoot.utf8Ptr());
       ImGui::TextWrapped("%s", launcherText("saveManager.exportNote", "Exports include player and universe save data only. Assets and mods are not included.").utf8Ptr());
 
-      if (ImGui::Button(launcherText("saveManager.openFolder", "Open Save Folder").utf8Ptr())) {
-        runLauncherAction("Open save folder", [&]() {
-          if (auto svc = m_platformServices->externalFileAccessService()) {
-            if (svc->openSaveLocationInSystemBrowser()) {
-              state.lastStatus = launcherText("status.saveFolderOpened", "Save folder opened.");
-              state.lastError.clear();
-            } else {
-              state.lastStatus = launcherText("status.openSaveFolderUnavailable", "Open save folder unavailable.");
-              state.lastError = launcherText("error.openSaveFolderFailed", "Could not open the native file browser for the save folder.");
-            }
+      if (ImGui::Button(launcherText("saveManager.copyPath", "Copy Save Path").utf8Ptr())) {
+        runLauncherAction("Copy save path", [&]() {
+          if (SDL_SetClipboardText(m_storageRoot.utf8Ptr())) {
+            state.lastStatus = launcherText("status.savePathCopied", "Save location copied to clipboard!");
+            state.lastError.clear();
           } else {
-            state.lastStatus = launcherText("status.openSaveFolderUnavailable", "Open save folder unavailable.");
-            state.lastError = launcherText("error.externalFileAccessUnavailable", "ExternalFileAccessService is unavailable on this platform build.");
+            state.lastStatus = launcherText("status.copySavePathUnavailable", "Copy save path unavailable.");
+            state.lastError = launcherText("error.copySavePathFailed", "Could not copy the save location to the clipboard.");
           }
         });
       }
