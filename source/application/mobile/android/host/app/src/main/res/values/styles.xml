@@ -3,5 +3,6 @@
     <style name="AppTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowNoTitle">true</item>
+        <item name="android:colorControlHighlight">@android:color/transparent</item>
     </style>
 </resources>

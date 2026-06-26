@@ -10,6 +10,7 @@ import android.content.pm.ResolveInfo;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.hardware.Sensor;
 import android.hardware.SensorManager;
 import android.net.Uri;
@@ -23,11 +24,16 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.DisplayCutout;
+import android.view.InputDevice;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Toast;
 import android.window.OnBackInvokedCallback;
 import android.window.OnBackInvokedDispatcher;
@@ -82,6 +88,42 @@ public final class MainActivity extends SDLActivity {
     }
 
     public static native void onNativeGyroAim(float x, float y, float z);
+
+    private static boolean isControllerSource(int source) {
+        return (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+            || (source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
+            || (source & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD;
+    }
+
+    private static boolean isControllerDevice(InputDevice device) {
+        return device != null && isControllerSource(device.getSources());
+    }
+
+    private void restoreSdlFocusBeforeControllerInput() {
+        View currentFocus = getCurrentFocus();
+        if (mTextEdit != null
+                && (mTextEdit.hasFocus()
+                    || currentFocus == mTextEdit
+                    || (mTextEdit.getVisibility() == View.VISIBLE && currentFocus != mSurface))) {
+            forceTextInputFocusLost();
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event != null && (isControllerSource(event.getSource()) || isControllerDevice(event.getDevice()))) {
+            restoreSdlFocusBeforeControllerInput();
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (event != null && (isControllerSource(event.getSource()) || isControllerDevice(event.getDevice()))) {
+            restoreSdlFocusBeforeControllerInput();
+        }
+        return super.dispatchGenericMotionEvent(event);
+    }
 
     @Override
     public void setOrientationBis(int w, int h, boolean resizable, String hint) {
@@ -183,6 +225,159 @@ public final class MainActivity extends SDLActivity {
         return sInstance;
     }
 
+    private static View findSdlSurface(View view) {
+        if (view == null) {
+            return null;
+        }
+        if ("org.libsdl.app.SDLSurface".equals(view.getClass().getName())) {
+            return view;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup)view;
+            for (int i = 0; i < group.getChildCount(); ++i) {
+                View childSurface = findSdlSurface(group.getChildAt(i));
+                if (childSurface != null) {
+                    return childSurface;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static void resetViewForFullscreenSdl(View view) {
+        if (view == null) {
+            return;
+        }
+        view.setAlpha(1.0f);
+        view.setTranslationX(0.0f);
+        view.setTranslationY(0.0f);
+        view.setScaleX(1.0f);
+        view.setScaleY(1.0f);
+        view.setSelected(false);
+        view.setActivated(false);
+        view.setPressed(false);
+        if (Build.VERSION.SDK_INT >= 26) {
+            view.setDefaultFocusHighlightEnabled(false);
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            view.setForeground(null);
+        }
+    }
+
+    private static void disableFocusHighlightRecursive(View view) {
+        if (view == null) {
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 26) {
+            view.setDefaultFocusHighlightEnabled(false);
+        }
+        if (Build.VERSION.SDK_INT >= 23) {
+            view.setForeground(null);
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup)view;
+            for (int i = 0; i < group.getChildCount(); ++i) {
+                disableFocusHighlightRecursive(group.getChildAt(i));
+            }
+        }
+    }
+
+    private static void hardResetDecorAfterTextInput() {
+        MainActivity activity = instance();
+        if (activity == null) {
+            return;
+        }
+
+        try {
+            Window window = activity.getWindow();
+            if (window != null) {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+                window.setDimAmount(0.0f);
+                if (Build.VERSION.SDK_INT >= 21) {
+                    window.setStatusBarColor(Color.TRANSPARENT);
+                    window.setNavigationBarColor(Color.TRANSPARENT);
+                    window.setBackgroundDrawable(new ColorDrawable(Color.BLACK));
+                }
+            }
+
+            resetViewForFullscreenSdl(window != null ? window.getDecorView() : null);
+            resetViewForFullscreenSdl(mLayout);
+            resetViewForFullscreenSdl(mSurface);
+            if (mLayout != null && mSurface != null) {
+                mLayout.bringChildToFront(mSurface);
+            }
+            activity.applyStableDisplayConfig();
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to reset Android decor after text input", t);
+        }
+    }
+
+    public static void forceTextInputFocusLost() {
+        MainActivity activity = instance();
+        if (activity == null) {
+            return;
+        }
+
+        CountDownLatch latch = new CountDownLatch(1);
+        Runnable task = () -> {
+            try {
+                View contentView = SDLActivity.getContentView();
+                View currentFocus = activity.getCurrentFocus();
+                Window window = activity.getWindow();
+                View decorView = window != null ? window.getDecorView() : null;
+                View sdlSurface = mSurface != null ? mSurface : findSdlSurface(contentView);
+                View focusTarget = sdlSurface != null ? sdlSurface : contentView;
+
+                InputMethodManager imm = (InputMethodManager)activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null) {
+                    View tokenView = mTextEdit != null ? mTextEdit : (currentFocus != null ? currentFocus : (focusTarget != null ? focusTarget : decorView));
+                    if (tokenView != null) {
+                        imm.hideSoftInputFromWindow(tokenView.getWindowToken(), 0);
+                    }
+                }
+
+                if (mTextEdit != null) {
+                    mTextEdit.clearFocus();
+                    disableFocusHighlightRecursive(mTextEdit);
+                    mTextEdit.setVisibility(View.INVISIBLE);
+                    if (mLayout != null) {
+                        mLayout.removeView(mTextEdit);
+                    }
+                    mTextEdit = null;
+                }
+                mScreenKeyboardShown = false;
+
+                if (currentFocus != null) {
+                    currentFocus.clearFocus();
+                }
+                if (focusTarget != null) {
+                    disableFocusHighlightRecursive(focusTarget);
+                    focusTarget.setFocusable(true);
+                    focusTarget.setFocusableInTouchMode(true);
+                    focusTarget.requestFocus();
+                    focusTarget.requestFocusFromTouch();
+                }
+                hardResetDecorAfterTextInput();
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to restore SDL focus after text input", t);
+            } finally {
+                latch.countDown();
+            }
+        };
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            task.run();
+            return;
+        }
+
+        activity.runOnUiThread(task);
+        try {
+            latch.await(250, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public static int[] getSafeAreaInsets() {
         synchronized (SAFE_AREA_LOCK) {
             return sSafeAreaInsets.clone();
@@ -243,6 +438,9 @@ public final class MainActivity extends SDLActivity {
 
             View decor = window.getDecorView();
             if (decor != null) {
+                disableFocusHighlightRecursive(decor);
+                disableFocusHighlightRecursive(mLayout);
+                disableFocusHighlightRecursive(mSurface);
                 decor.setOnApplyWindowInsetsListener((view, insets) -> {
                     updateSafeAreaInsets(insets);
                     return insets;
